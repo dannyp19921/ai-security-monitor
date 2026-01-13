@@ -1,0 +1,33 @@
+## (root-folder)/docker-compose.yml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: securemonitor-db
+    environment:
+      POSTGRES_DB: securemonitor
+      POSTGRES_USER: securemonitor
+      POSTGRES_PASSWORD: localdev123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: securemonitor-backend
+    depends_on:
+      - database
+    environment:
+      PGHOST: database
+      PGPORT: 5432
+      PGDATABASE: securemonitor
+      PGUSER: securemonitor
+      PGPASSWORD: localdev123
+      GROQ_API_KEY: ${GROQ_API_KEY}
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
