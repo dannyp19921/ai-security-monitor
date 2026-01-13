@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.gradle/
+build/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Build outputs
+dist/
+target/
+*.jar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
