@@ -45,7 +45,7 @@ class AdminController(
         val role = roleRepository.findByName(roleName)
             .orElseThrow { IllegalArgumentException("Role not found") }
         
-        user.roles.add(role)
+        user.roles = user.roles + role
         val savedUser = userRepository.save(user)
         
         auditService.log(
@@ -70,7 +70,7 @@ class AdminController(
         val role = roleRepository.findByName(roleName)
             .orElseThrow { IllegalArgumentException("Role not found") }
         
-        user.roles.remove(role)
+        user.roles = user.roles - role
         val savedUser = userRepository.save(user)
         
         auditService.log(
