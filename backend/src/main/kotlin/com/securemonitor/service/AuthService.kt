@@ -48,7 +48,7 @@ class AuthService(
             username = username,
             email = email,
             passwordHash = passwordEncoder.encode(password),
-            roles = setOf(userRole)
+            roles = mutableSetOf(userRole)
         )
 
         val savedUser = userRepository.save(user)
