@@ -4,24 +4,21 @@ spring:
     name: ai-security-monitor
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/securemonitor
-    username: securemonitor
-    password: localdev123
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/securemonitor}
+    username: ${PGUSER:securemonitor}
+    password: ${PGPASSWORD:localdev123}
     driver-class-name: org.postgresql.Driver
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
 
-  config:
-    import: optional:file:.env[.properties]
-
 server:
-  port: 8080
+  port: ${PORT:8080}
 
 groq:
   api-key: ${GROQ_API_KEY:}
