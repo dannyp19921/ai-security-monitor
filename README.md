@@ -1,20 +1,29 @@
 # AI Security Monitor
 
-Et sikkerhets-dashboard med AI-støttet analyse, bygget for å demonstrere moderne IAM-prinsipper og fullstack-utvikling.
+A security dashboard with AI-powered analysis, built to demonstrate modern IAM principles and fullstack development.
 
 ## Tech Stack
 
 - **Frontend:** React + TypeScript
 - **Backend:** Kotlin + Spring Boot
 - **Database:** PostgreSQL
-- **Auth:** OAuth 2.0 / OIDC (egen implementasjon)
-- **AI:** Ollama (lokal LLM)
+- **Auth:** OAuth 2.0 / OIDC (custom implementation)
+- **AI:** Ollama (local LLM)
 - **Container:** Docker
 
-## Kom i gang
+## Project Structure
+```
+ai-security-monitor/
+├── backend/      # Kotlin + Spring Boot API
+├── frontend/     # React + TypeScript SPA
+├── docker/       # Docker configurations
+└── docs/         # Architecture and documentation
+```
 
-Dokumentasjon kommer...
+## Getting Started
 
-## Lisens
+Documentation coming soon...
+
+## License
 
 MIT
