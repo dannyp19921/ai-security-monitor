@@ -15,14 +15,29 @@ class AuthService(
     private val userRepository: UserRepository,
     private val roleRepository: RoleRepository,
     private val passwordEncoder: PasswordEncoder,
-    private val jwtService: JwtService
+    private val jwtService: JwtService,
+    private val auditService: AuditService
 ) {
 
-    fun register(username: String, email: String, password: String): User {
+    fun register(username: String, email: String, password: String, ipAddress: String? = null): User {
         if (userRepository.existsByUsername(username)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Username already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
             throw IllegalArgumentException("Username already exists")
         }
         if (userRepository.existsByEmail(email)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Email already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
             throw IllegalArgumentException("Email already exists")
         }
 
@@ -36,23 +51,65 @@ class AuthService(
             roles = setOf(userRole)
         )
 
-        return userRepository.save(user)
+        val savedUser = userRepository.save(user)
+
+        auditService.log(
+            action = "USER_REGISTERED",
+            username = username,
+            resourceType = "USER",
+            resourceId = savedUser.id.toString(),
+            ipAddress = ipAddress,
+            details = "New user registered with email: $email"
+        )
+
+        return savedUser
     }
 
-    fun login(username: String, password: String): String {
-        val user = userRepository.findByUsername(username)
-            .orElseThrow { IllegalArgumentException("Invalid credentials") }
+    fun login(username: String, password: String, ipAddress: String? = null): String {
+        val user = userRepository.findByUsername(username).orElse(null)
+
+        if (user == null) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "User not found",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Invalid credentials")
+        }
 
         if (!passwordEncoder.matches(password, user.passwordHash)) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Invalid password",
+                ipAddress = ipAddress,
+                success = false
+            )
             throw IllegalArgumentException("Invalid credentials")
         }
 
         if (!user.enabled) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Account disabled",
+                ipAddress = ipAddress,
+                success = false
+            )
             throw IllegalArgumentException("Account is disabled")
         }
 
-        // Update last login
         userRepository.save(user.copy(lastLogin = Instant.now()))
+
+        auditService.log(
+            action = "USER_LOGIN",
+            username = username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = ipAddress
+        )
 
         val roles = user.roles.map { it.name }
         return jwtService.generateToken(user.username, roles)
