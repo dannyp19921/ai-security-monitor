@@ -4,7 +4,7 @@ spring:
     name: ai-security-monitor
 
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/securemonitor}
+    url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:securemonitor}
     username: ${PGUSER:securemonitor}
     password: ${PGPASSWORD:localdev123}
     driver-class-name: org.postgresql.Driver
