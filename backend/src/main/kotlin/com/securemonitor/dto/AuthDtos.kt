@@ -27,3 +27,12 @@ data class UserResponse(
     val createdAt: String,
     val lastLogin: String?
 )
+
+data class ChatRequest(
+    val message: String
+)
+
+data class ChatResponse(
+    val response: String,
+    val timestamp: String = java.time.Instant.now().toString()
+)

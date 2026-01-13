@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { auditService } from '../services/api';
 import { Button } from '../components/ui/Button';
+import { AiChat } from '../components/chat/AiChat';
 import type { AuditLog } from '../types';
 
 interface DashboardPageProps {
@@ -58,28 +59,34 @@ export function DashboardPage({ onLogout }: DashboardPageProps) {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* User Info Card */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">User Profile</h2>
-          <div className="space-y-3">
-            <div>
-              <span className="text-sm text-gray-500">Username</span>
-              <p className="font-medium text-gray-900">{username}</p>
-            </div>
-            <div>
-              <span className="text-sm text-gray-500">Roles</span>
-              <div className="flex gap-2 mt-1">
-                {roles.map((role) => (
-                  <span
-                    key={role}
-                    className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium"
-                  >
-                    {role}
-                  </span>
-                ))}
+        {/* Top Row: User Info + AI Chat */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* User Info Card */}
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">User Profile</h2>
+            <div className="space-y-3">
+              <div>
+                <span className="text-sm text-gray-500">Username</span>
+                <p className="font-medium text-gray-900">{username}</p>
+              </div>
+              <div>
+                <span className="text-sm text-gray-500">Roles</span>
+                <div className="flex gap-2 mt-1">
+                  {roles.map((role) => (
+                    <span
+                      key={role}
+                      className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium"
+                    >
+                      {role}
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
+
+          {/* AI Chat */}
+          <AiChat />
         </div>
 
         {/* Audit Logs Card */}

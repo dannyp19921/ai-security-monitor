@@ -64,4 +64,12 @@ export const healthService = {
   },
 };
 
+// AI services
+export const aiService = {
+  chat: async (message: string): Promise<{ response: string; timestamp: string }> => {
+    const response = await api.post('/api/ai/chat', { message });
+    return response.data;
+  },
+};
+
 export default api;
