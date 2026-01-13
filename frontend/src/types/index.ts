@@ -37,3 +37,13 @@ export interface AuditLog {
   details: string | null;
   success: boolean;
 }
+
+export interface UserResponse {
+  id: number;
+  username: string;
+  email: string;
+  roles: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastLogin: string | null;
+}

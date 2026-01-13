@@ -1,6 +1,6 @@
 // frontend/src/services/api.ts
 import axios from 'axios';
-import type { AuthResponse, LoginRequest, RegisterRequest, AuditLog } from '../types';
+import type { AuthResponse, LoginRequest, RegisterRequest, AuditLog, UserResponse } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -68,6 +68,24 @@ export const healthService = {
 export const aiService = {
   chat: async (message: string): Promise<{ response: string; timestamp: string }> => {
     const response = await api.post('/api/ai/chat', { message });
+    return response.data;
+  },
+};
+
+// Admin services 
+export const adminService = {
+  getAllUsers: async (): Promise<UserResponse[]> => {
+    const response = await api.get<UserResponse[]>('/api/admin/users');
+    return response.data;
+  },
+
+  addRoleToUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.post<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
+    return response.data;
+  },
+
+  removeRoleFromUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.delete<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
     return response.data;
   },
 };

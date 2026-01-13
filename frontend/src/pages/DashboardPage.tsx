@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { auditService } from '../services/api';
 import { Button } from '../components/ui/Button';
 import { AiChat } from '../components/chat/AiChat';
+import { AdminPanel } from '../components/admin/AdminPanel';
 import type { AuditLog } from '../types';
 
 interface DashboardPageProps {
@@ -11,7 +12,7 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({ onLogout }: DashboardPageProps) {
-  const { username, roles, logout } = useAuth();
+  const { username, roles, logout, hasRole } = useAuth();
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -49,6 +50,11 @@ export function DashboardPage({ onLogout }: DashboardPageProps) {
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600 hidden sm:block">
               {username}
+              {hasRole('ADMIN') && (
+                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">
+                  ADMIN
+                </span>
+              )}
             </span>
             <Button variant="secondary" onClick={handleLogout} className="!w-auto !py-2">
               Logout
@@ -75,7 +81,11 @@ export function DashboardPage({ onLogout }: DashboardPageProps) {
                   {roles.map((role) => (
                     <span
                       key={role}
-                      className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium"
+                      className={`px-3 py-1 rounded-full text-sm font-medium ${
+                        role === 'ADMIN' 
+                          ? 'bg-purple-100 text-purple-800' 
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
                     >
                       {role}
                     </span>
@@ -88,6 +98,9 @@ export function DashboardPage({ onLogout }: DashboardPageProps) {
           {/* AI Chat */}
           <AiChat />
         </div>
+
+        {/* Admin Panel - Only visible for admins */}
+        {hasRole('ADMIN') && <AdminPanel />}
 
         {/* Audit Logs Card */}
         <div className="bg-white rounded-xl shadow-sm p-6">
