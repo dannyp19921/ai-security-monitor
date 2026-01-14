@@ -1,6 +1,6 @@
 # AI Security Monitor
 
-A comprehensive IAM (Identity and Access Management) portfolio project demonstrating enterprise-grade security features including JWT authentication, OAuth 2.0/OIDC Provider, Multi-Factor Authentication (MFA/TOTP), role-based access control, and AI-powered security assistance.
+A comprehensive IAM (Identity and Access Management) portfolio project demonstrating enterprise-grade security features including JWT authentication, OAuth 2.0/OIDC Provider, Multi-Factor Authentication (MFA/TOTP), SCIM 2.0 provisioning, role-based access control, and AI-powered security assistance.
 
 ## 🌐 Live Demo
 
@@ -15,6 +15,11 @@ A comprehensive IAM (Identity and Access Management) portfolio project demonstra
 - **OAuth 2.0/OIDC Provider** - Built from scratch with PKCE support (RFC 7636)
 - **Role-Based Access Control (RBAC)** - USER and ADMIN roles
 - **Google OAuth2 Login** - Federated identity support
+
+### Identity Provisioning
+- **SCIM 2.0 API** - Standardized user provisioning (RFC 7643/7644)
+- **Automated User Lifecycle** - Create, update, deactivate users programmatically
+- **Group/Role Management** - SCIM Groups mapped to internal roles
 
 ### Security Features
 - **Comprehensive Audit Logging** - All security events tracked with timestamps and IP addresses
@@ -52,71 +57,58 @@ A comprehensive IAM (Identity and Access Management) portfolio project demonstra
 │  │  └─────────────┘  └─────────────┘  └─────────────┘                  │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
-│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐   │
-│  │   Auth Module      │  │   MFA Module       │  │  OAuth2 Provider   │   │
-│  │  ┌──────────────┐  │  │  ┌──────────────┐  │  │  ┌──────────────┐  │   │
-│  │  │ AuthService  │  │  │  │ TotpService  │  │  │  │ /authorize   │  │   │
-│  │  │ - login      │  │  │  │ - RFC 6238   │  │  │  │ /token       │  │   │
-│  │  │ - register   │  │  │  │ - 33 tests   │  │  │  │ /userinfo    │  │   │
-│  │  │ - MFA check  │  │  │  ├──────────────┤  │  │  │ /.well-known │  │   │
-│  │  ├──────────────┤  │  │  │ MfaService   │  │  │  ├──────────────┤  │   │
-│  │  │ JwtService   │  │  │  │ - setup      │  │  │  │ PkceService  │  │   │
-│  │  │ - tokens     │  │  │  │ - verify     │  │  │  │ - S256       │  │   │
-│  │  │ - MFA pending│  │  │  │ - backup     │  │  │  │ - plain      │  │   │
-│  │  └──────────────┘  │  │  └──────────────┘  │  │  └──────────────┘  │   │
-│  └────────────────────┘  └────────────────────┘  └────────────────────┘   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │
+│  │Auth Module  │  │ MFA Module  │  │OAuth2 Prov. │  │ SCIM 2.0    │       │
+│  │- login      │  │- RFC 6238   │  │- /authorize │  │- /Users     │       │
+│  │- register   │  │- TOTP       │  │- /token     │  │- /Groups    │       │
+│  │- MFA check  │  │- backup     │  │- /userinfo  │  │- CRUD ops   │       │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘       │
 │                                                                              │
-│  ┌────────────────────┐  ┌────────────────────┐                            │
-│  │   Audit Module     │  │   AI Module        │                            │
-│  │  - All events      │  │  - Groq LLM        │                            │
-│  │  - IP tracking     │  │  - Security chat   │                            │
-│  └────────────────────┘  └────────────────────┘                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                         Data Layer                                    │  │
+│  │  ┌───────────────────┐  ┌───────────────────┐  ┌─────────────────┐  │  │
+│  │  │   User Entity     │  │    Role Entity    │  │   AuditLog      │  │  │
+│  │  │   + MFA fields    │  │    (USER/ADMIN)   │  │   (all events)  │  │  │
+│  │  └───────────────────┘  └───────────────────┘  └─────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                         │
                                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          PostgreSQL (Railway)                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐           │
-│  │  users   │  │  roles   │  │ audit_log│  │ oauth2_clients   │           │
-│  │  + MFA   │  │          │  │          │  │ authorization_   │           │
-│  │  fields  │  │          │  │          │  │ codes            │           │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘           │
-└─────────────────────────────────────────────────────────────────────────────┘
+                         ┌──────────────────────────┐
+                         │   PostgreSQL (Railway)   │
+                         └──────────────────────────┘
 ```
 
-## 🔐 MFA (Multi-Factor Authentication) Flow
+## 🔐 MFA Flow
 
 ```
-┌─────────┐         ┌─────────┐         ┌─────────┐         ┌─────────┐
-│  User   │         │Frontend │         │ Backend │         │  Auth   │
-│         │         │         │         │         │         │  App    │
-└────┬────┘         └────┬────┘         └────┬────┘         └────┬────┘
-     │                   │                   │                   │
-     │  1. Enable MFA    │                   │                   │
-     │──────────────────▶│                   │                   │
-     │                   │  POST /mfa/setup  │                   │
-     │                   │──────────────────▶│                   │
-     │                   │                   │                   │
-     │                   │  {secret, qrUri}  │                   │
-     │                   │◀──────────────────│                   │
-     │                   │                   │                   │
-     │  2. Show QR Code  │                   │                   │
-     │◀──────────────────│                   │                   │
-     │                   │                   │                   │
-     │  3. Scan QR       │                   │                   │
-     │───────────────────────────────────────────────────────────▶
-     │                   │                   │                   │
-     │  4. Enter Code    │                   │                   │
-     │──────────────────▶│                   │                   │
-     │                   │ POST /mfa/verify  │                   │
-     │                   │──────────────────▶│                   │
-     │                   │                   │                   │
-     │                   │ {backupCodes[10]} │                   │
-     │                   │◀──────────────────│                   │
-     │                   │                   │                   │
-     │  5. Save Backup   │                   │                   │
-     │◀──────────────────│                   │                   │
-     │                   │                   │                   │
+     ┌────────┐          ┌─────────┐             ┌─────────┐            ┌─────────┐
+     │  User  │          │ Frontend│             │ Backend │            │  Auth   │
+     │        │          │         │             │         │            │   App   │
+     └───┬────┘          └────┬────┘             └────┬────┘            └────┬────┘
+         │                    │                       │                      │
+         │  1. Enable MFA     │                       │                      │
+         │───────────────────>│  POST /mfa/setup     │                      │
+         │                    │──────────────────────>│                      │
+         │                    │                       │                      │
+         │                    │  {secret, qrCodeUri} │                      │
+         │                    │<──────────────────────│                      │
+         │                    │                       │                      │
+         │  2. Show QR Code   │                       │                      │
+         │<───────────────────│                       │                      │
+         │                    │                       │                      │
+         │  3. Scan QR        │                       │                      │
+         │────────────────────────────────────────────────────────────────────>
+         │                    │                       │                      │
+         │  4. Enter Code     │                       │                      │
+         │───────────────────>│  POST /mfa/verify    │                      │
+         │                    │──────────────────────>│                      │
+         │                    │                       │                      │
+         │                    │  {backupCodes[10]}   │                      │
+         │                    │<──────────────────────│                      │
+         │                    │                       │                      │
+         │  5. Save Backup    │                       │                      │
+         │<───────────────────│                       │                      │
 ```
 
 ## 🔑 OAuth 2.0/OIDC Provider
@@ -164,6 +156,140 @@ curl -X POST https://api.example.com/oauth2/token \
   -d "code_verifier=$CODE_VERIFIER"
 ```
 
+## 📋 SCIM 2.0 API
+
+SCIM (System for Cross-domain Identity Management) enables automated user provisioning from HR systems, IdPs, and other identity sources. This implementation follows RFC 7643 (Core Schema) and RFC 7644 (Protocol).
+
+### Why SCIM?
+
+In enterprise environments, manually managing user accounts across multiple systems is error-prone and doesn't scale. SCIM provides:
+- **Automated Provisioning** - Create users automatically when they join
+- **Lifecycle Management** - Deactivate accounts when employees leave
+- **Consistency** - Standardized API works with any SCIM-compliant IdP
+- **Audit Trail** - All provisioning events are logged
+
+### Discovery Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /scim/v2/ServiceProviderConfig` | Server capabilities and supported features |
+| `GET /scim/v2/ResourceTypes` | Available resource types (Users, Groups) |
+| `GET /scim/v2/Schemas` | SCIM schemas with attribute definitions |
+
+### User Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/scim/v2/Users` | List users with filtering/pagination |
+| `GET` | `/scim/v2/Users/{id}` | Get single user |
+| `POST` | `/scim/v2/Users` | Create new user |
+| `PUT` | `/scim/v2/Users/{id}` | Replace user (full update) |
+| `PATCH` | `/scim/v2/Users/{id}` | Partial update user |
+| `DELETE` | `/scim/v2/Users/{id}` | Delete user |
+
+### Group Endpoints (Read-Only)
+
+Groups are mapped to internal roles (USER, ADMIN).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/scim/v2/Groups` | List all groups/roles |
+| `GET` | `/scim/v2/Groups/{id}` | Get single group with members |
+
+### Example Usage
+
+**Create a User:**
+```bash
+curl -X POST https://api.example.com/scim/v2/Users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/scim+json" \
+  -d '{
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+    "userName": "jdoe",
+    "emails": [{"value": "jdoe@example.com", "primary": true}],
+    "active": true,
+    "password": "SecurePass123!"
+  }'
+```
+
+**Response:**
+```json
+{
+  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+  "id": "42",
+  "userName": "jdoe",
+  "emails": [{"value": "jdoe@example.com", "primary": true}],
+  "active": true,
+  "groups": [{"value": "1", "display": "USER", "$ref": "/scim/v2/Groups/1"}],
+  "meta": {
+    "resourceType": "User",
+    "created": "2025-01-14T10:30:00Z",
+    "location": "/scim/v2/Users/42"
+  }
+}
+```
+
+**List Users with Filter:**
+```bash
+# Find user by email
+curl "https://api.example.com/scim/v2/Users?filter=emails.value%20eq%20%22jdoe@example.com%22" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Find active users
+curl "https://api.example.com/scim/v2/Users?filter=active%20eq%20true&startIndex=1&count=10" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Deactivate User (PATCH):**
+```bash
+curl -X PATCH https://api.example.com/scim/v2/Users/42 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/scim+json" \
+  -d '{
+    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+    "Operations": [
+      {"op": "replace", "path": "active", "value": false}
+    ]
+  }'
+```
+
+**Delete User:**
+```bash
+curl -X DELETE https://api.example.com/scim/v2/Users/42 \
+  -H "Authorization: Bearer $TOKEN"
+# Returns 204 No Content
+```
+
+### Supported Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Filter | ✅ | `userName eq`, `emails.value eq`, `active eq` |
+| Pagination | ✅ | `startIndex`, `count` parameters |
+| PATCH Operations | ✅ | `add`, `replace`, `remove` |
+| Bulk Operations | ❌ | Not implemented |
+| Sorting | ❌ | Not implemented |
+| ETags | ❌ | Not implemented |
+
+### Error Responses
+
+SCIM uses standardized error format (RFC 7644 Section 3.12):
+
+```json
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+  "status": "409",
+  "scimType": "uniqueness",
+  "detail": "userName 'jdoe' is already taken"
+}
+```
+
+| Status | scimType | Description |
+|--------|----------|-------------|
+| 400 | `invalidValue` | Invalid attribute value |
+| 404 | `noTarget` | Resource not found |
+| 409 | `uniqueness` | Unique constraint violation |
+
 ## 🛠️ Tech Stack
 
 | Layer | Technology |
@@ -173,6 +299,7 @@ curl -X POST https://api.example.com/oauth2/token \
 | Database | PostgreSQL 16 |
 | Auth | JWT (jjwt), BCrypt, TOTP (RFC 6238) |
 | OAuth | Custom OIDC Provider with PKCE |
+| Provisioning | SCIM 2.0 (RFC 7643/7644) |
 | AI | Groq API (Llama 3.1) |
 | Deploy | Vercel (frontend), Railway (backend + DB) |
 | CI/CD | GitHub Actions |
@@ -189,7 +316,7 @@ curl -X POST https://api.example.com/oauth2/token \
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/ai-security-monitor.git
+git clone https://github.com/dannyp19921/ai-security-monitor.git
 cd ai-security-monitor
 
 # Start database
@@ -264,6 +391,9 @@ ai-security-monitor/
 │       │   ├── model/
 │       │   ├── repository/
 │       │   └── service/
+│       ├── scim/            # SCIM 2.0 API
+│       │   ├── controller/  # User, Group, Config endpoints
+│       │   └── dto/         # SCIM resource types
 │       ├── repository/      # Data access
 │       ├── security/        # JWT, filters
 │       └── service/         # Business logic
@@ -291,6 +421,12 @@ ai-security-monitor/
 - Built OAuth 2.0 Provider from scratch (not using Keycloak) to demonstrate deep protocol understanding
 - Implemented PKCE with S256 method for public client security
 - Full OIDC compliance with Discovery and JWKS endpoints
+
+**SCIM 2.0 Implementation:**
+- Standardized user provisioning following RFC 7643/7644
+- Full CRUD operations with PATCH support for partial updates
+- Filter and pagination for efficient querying
+- Enables integration with enterprise IdPs (Azure AD, Okta, etc.)
 
 **Security Best Practices:**
 - Timing-safe comparisons to prevent timing attacks
