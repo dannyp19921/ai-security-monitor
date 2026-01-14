@@ -72,7 +72,7 @@ class AuthorizationService(
         if (request.responseType !in SUPPORTED_RESPONSE_TYPES) {
             log.warn("Unsupported response_type: {}", request.responseType)
             throw OAuth2Exception(
-                error = OAuth2Exception.ErrorCodes.UNSUPPORTED_RESPONSE_TYPE,
+                error = "unsupported_response_type",
                 errorDescription = "Response type '${request.responseType}' is not supported. " +
                     "Supported types: $SUPPORTED_RESPONSE_TYPES"
             )

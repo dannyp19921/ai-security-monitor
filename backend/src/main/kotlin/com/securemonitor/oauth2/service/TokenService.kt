@@ -114,7 +114,8 @@ class TokenService(
             }
         
         // Verify PKCE if code challenge was present
-        if (authCode.codeChallenge != null) {
+        val codeChallenge = authCode.codeChallenge
+        if (codeChallenge != null) {
             if (request.codeVerifier.isNullOrBlank()) {
                 log.warn("PKCE code_verifier missing for code that requires it")
                 throw OAuth2Exception.invalidGrant(
@@ -124,7 +125,7 @@ class TokenService(
             
             val pkceValid = pkceService.verifyCodeChallenge(
                 codeVerifier = request.codeVerifier,
-                codeChallenge = authCode.codeChallenge,
+                codeChallenge = codeChallenge,  // <-- Nå fungerer smart cast
                 method = authCode.codeChallengeMethod ?: "S256"
             )
             
