@@ -26,11 +26,11 @@ class AuthController(
         val user = authService.register(request.username, request.email, request.password, ipAddress)
         val roles = user.roles.map { it.name }
         val token = jwtService.generateToken(user.username, roles)
-
         return ResponseEntity.ok(AuthResponse(
             token = token,
             username = user.username,
-            roles = roles
+            roles = roles,
+            mfaRequired = false
         ))
     }
 
@@ -40,14 +40,13 @@ class AuthController(
         httpRequest: HttpServletRequest
     ): ResponseEntity<AuthResponse> {
         val ipAddress = getClientIp(httpRequest)
-        val token = authService.login(request.username, request.password, ipAddress)
-        val username = jwtService.getUsername(token)
-        val roles = jwtService.getRoles(token)
-
+        val result = authService.login(request.username, request.password, ipAddress)
+        
         return ResponseEntity.ok(AuthResponse(
-            token = token,
-            username = username,
-            roles = roles
+            token = result.token,
+            username = result.username,
+            roles = result.roles,
+            mfaRequired = result.mfaRequired
         ))
     }
 

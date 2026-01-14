@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { LoginForm } from '../components/auth/LoginForm';
 import { RegisterForm } from '../components/auth/RegisterForm';
+import { MfaVerify } from '../components/auth/MfaVerify';
 import { useAuth } from '../hooks/useAuth';
 
 interface LoginPageProps {
@@ -10,9 +11,12 @@ interface LoginPageProps {
   onClearError?: () => void;
 }
 
+type AuthStep = 'login' | 'register' | 'mfa';
+
 export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProps) {
-  const [isLogin, setIsLogin] = useState(true);
+  const [authStep, setAuthStep] = useState<AuthStep>('login');
   const [error, setError] = useState<string | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
   const { login, register } = useAuth();
 
   // Show OAuth2 error if present
@@ -29,8 +33,29 @@ export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProp
   }, [oauthError, onClearError]);
 
   const handleLogin = async (username: string, password: string) => {
-    await login({ username, password });
+    try {
+      const response = await login({ username, password });
+      
+      // Check if MFA is required
+      if (response.mfaRequired && response.token) {
+        setMfaToken(response.token);
+        setAuthStep('mfa');
+      } else {
+        onSuccess();
+      }
+    } catch (err) {
+      throw err;
+    }
+  };
+
+  const handleMfaSuccess = (_token: string) => {
+    setMfaToken(null);
     onSuccess();
+  };
+
+  const handleMfaCancel = () => {
+    setMfaToken(null);
+    setAuthStep('login');
   };
 
   const handleRegister = async (username: string, email: string, password: string) => {
@@ -71,15 +96,25 @@ export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProp
         )}
 
         <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
-          {isLogin ? (
+          {authStep === 'login' && (
             <LoginForm
               onSubmit={handleLogin}
-              onSwitchToRegister={() => setIsLogin(false)}
+              onSwitchToRegister={() => setAuthStep('register')}
             />
-          ) : (
+          )}
+          
+          {authStep === 'register' && (
             <RegisterForm
               onSubmit={handleRegister}
-              onSwitchToLogin={() => setIsLogin(true)}
+              onSwitchToLogin={() => setAuthStep('login')}
+            />
+          )}
+          
+          {authStep === 'mfa' && mfaToken && (
+            <MfaVerify
+              mfaToken={mfaToken}
+              onSuccess={handleMfaSuccess}
+              onCancel={handleMfaCancel}
             />
           )}
         </div>

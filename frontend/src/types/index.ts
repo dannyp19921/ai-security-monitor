@@ -7,12 +7,15 @@ export interface User {
   enabled: boolean;
   createdAt: string;
   lastLogin: string | null;
+  mfaEnabled?: boolean;
 }
 
 export interface AuthResponse {
   token: string;
   username: string;
   roles: string[];
+  mfaRequired?: boolean;
+  mfaToken?: string; // Temporary token for MFA verification
 }
 
 export interface LoginRequest {
@@ -46,4 +49,39 @@ export interface UserResponse {
   enabled: boolean;
   createdAt: string;
   lastLogin: string | null;
+  mfaEnabled?: boolean;
+}
+
+// MFA Types
+export interface MfaSetupResponse {
+  secret: string;
+  qrCodeUri: string;
+  issuer: string;
+  accountName: string;
+}
+
+export interface MfaSetupVerifyRequest {
+  secret: string;
+  code: string;
+}
+
+export interface MfaSetupCompleteResponse {
+  mfaEnabled: boolean;
+  backupCodes: string[];
+  message: string;
+}
+
+export interface MfaVerifyRequest {
+  code: string;
+}
+
+export interface MfaStatusResponse {
+  mfaEnabled: boolean;
+  mfaEnabledAt: string | null;
+  backupCodesRemaining: number | null;
+}
+
+export interface MfaDisableRequest {
+  password: string;
+  code: string;
 }

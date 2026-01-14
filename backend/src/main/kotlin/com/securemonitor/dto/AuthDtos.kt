@@ -1,4 +1,4 @@
-// backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt 
+// backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt
 package com.securemonitor.dto
 
 data class RegisterRequest(
@@ -15,7 +15,8 @@ data class LoginRequest(
 data class AuthResponse(
     val token: String,
     val username: String,
-    val roles: List<String>
+    val roles: List<String>,
+    val mfaRequired: Boolean = false
 )
 
 data class UserResponse(
@@ -25,7 +26,8 @@ data class UserResponse(
     val roles: List<String>,
     val enabled: Boolean,
     val createdAt: String,
-    val lastLogin: String?
+    val lastLogin: String?,
+    val mfaEnabled: Boolean = false
 )
 
 data class ChatRequest(

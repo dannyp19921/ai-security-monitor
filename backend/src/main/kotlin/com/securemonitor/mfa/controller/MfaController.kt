@@ -5,11 +5,15 @@ import com.securemonitor.mfa.dto.*
 import com.securemonitor.mfa.service.MfaException
 import com.securemonitor.mfa.service.MfaService
 import com.securemonitor.repository.UserRepository
+import com.securemonitor.security.JwtService
+import com.securemonitor.service.AuditService
+import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.*
+import java.time.Instant
 
 /**
  * REST controller for Multi-Factor Authentication (MFA) operations.
@@ -27,7 +31,9 @@ import org.springframework.web.bind.annotation.*
 @RequestMapping("/api/auth/mfa")
 class MfaController(
     private val mfaService: MfaService,
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val jwtService: JwtService,
+    private val auditService: AuditService
 ) {
 
     /**
@@ -55,22 +61,51 @@ class MfaController(
     }
 
     /**
-     * Verifies a TOTP code.
-     * Used during login when MFA is enabled.
+     * Verifies a TOTP code during MFA login.
+     * Returns a full JWT token on success.
      */
     @PostMapping("/verify")
     fun verifyCode(
-        @Valid @RequestBody request: MfaVerifyRequest
+        @Valid @RequestBody request: MfaVerifyRequest,
+        httpRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
-        val userId = getCurrentUserId()
-        val isValid = mfaService.verifyCode(userId, request.code)
+        val username = getCurrentUsername()
+        val user = userRepository.findByUsername(username)
+            .orElseThrow { MfaException("User not found") }
         
+        val isValid = mfaService.verifyCode(user.id, request.code)
+        val ipAddress = getClientIp(httpRequest)
+
         return if (isValid) {
+            // Update last login
+            userRepository.save(user.copy(lastLogin = Instant.now()))
+            
+            // Generate full token (not MFA pending)
+            val roles = user.roles.map { it.name }
+            val token = jwtService.generateToken(user.username, roles)
+            
+            auditService.log(
+                action = "MFA_LOGIN_SUCCESS",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress
+            )
+            
             ResponseEntity.ok(mapOf(
                 "success" to true,
-                "message" to "MFA verification successful"
+                "message" to "MFA verification successful",
+                "token" to token
             ))
         } else {
+            auditService.log(
+                action = "MFA_LOGIN_FAILED",
+                username = username,
+                details = "Invalid TOTP code",
+                ipAddress = ipAddress,
+                success = false
+            )
+            
             ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf(
                 "success" to false,
                 "message" to "Invalid verification code"
@@ -79,20 +114,42 @@ class MfaController(
     }
 
     /**
-     * Verifies a backup code.
-     * Used when user doesn't have access to authenticator app.
+     * Verifies a backup code during MFA login.
+     * Returns a full JWT token on success.
      */
     @PostMapping("/backup")
     fun verifyBackupCode(
-        @Valid @RequestBody request: MfaBackupCodeRequest
+        @Valid @RequestBody request: MfaBackupCodeRequest,
+        httpRequest: HttpServletRequest
     ): ResponseEntity<Map<String, Any>> {
-        val userId = getCurrentUserId()
-        val (isValid, remainingCodes) = mfaService.verifyBackupCode(userId, request.backupCode)
+        val username = getCurrentUsername()
+        val user = userRepository.findByUsername(username)
+            .orElseThrow { MfaException("User not found") }
         
+        val (isValid, remainingCodes) = mfaService.verifyBackupCode(user.id, request.backupCode)
+        val ipAddress = getClientIp(httpRequest)
+
         return if (isValid) {
+            // Update last login
+            userRepository.save(user.copy(lastLogin = Instant.now()))
+            
+            // Generate full token
+            val roles = user.roles.map { it.name }
+            val token = jwtService.generateToken(user.username, roles)
+            
+            auditService.log(
+                action = "MFA_LOGIN_BACKUP_CODE",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress,
+                details = "Backup code used, $remainingCodes remaining"
+            )
+            
             val response = mutableMapOf<String, Any>(
                 "success" to true,
                 "message" to "Backup code verified",
+                "token" to token,
                 "remainingBackupCodes" to remainingCodes
             )
             if (remainingCodes <= 2) {
@@ -100,6 +157,14 @@ class MfaController(
             }
             ResponseEntity.ok(response.toMap())
         } else {
+            auditService.log(
+                action = "MFA_LOGIN_FAILED",
+                username = username,
+                details = "Invalid backup code",
+                ipAddress = ipAddress,
+                success = false
+            )
+            
             ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf(
                 "success" to false,
                 "message" to "Invalid backup code"
@@ -149,12 +214,30 @@ class MfaController(
      * Gets the current authenticated user's ID.
      */
     private fun getCurrentUserId(): Long {
-        val username = SecurityContextHolder.getContext().authentication?.name
-            ?: throw MfaException("Not authenticated")
-        
+        val username = getCurrentUsername()
         return userRepository.findByUsername(username)
             .orElseThrow { MfaException("User not found") }
             .id
+    }
+    
+    /**
+     * Gets the current authenticated username.
+     */
+    private fun getCurrentUsername(): String {
+        return SecurityContextHolder.getContext().authentication?.name
+            ?: throw MfaException("Not authenticated")
+    }
+    
+    /**
+     * Gets client IP address from request.
+     */
+    private fun getClientIp(request: HttpServletRequest): String {
+        val xForwardedFor = request.getHeader("X-Forwarded-For")
+        return if (xForwardedFor != null) {
+            xForwardedFor.split(",")[0].trim()
+        } else {
+            request.remoteAddr
+        }
     }
 
     /**

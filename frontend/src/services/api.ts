@@ -1,6 +1,16 @@
 // frontend/src/services/api.ts
 import axios from 'axios';
-import type { AuthResponse, LoginRequest, RegisterRequest, AuditLog, UserResponse } from '../types';
+import type { 
+  AuthResponse, 
+  LoginRequest, 
+  RegisterRequest, 
+  AuditLog, 
+  UserResponse,
+  MfaSetupResponse,
+  MfaSetupVerifyRequest,
+  MfaSetupCompleteResponse,
+  MfaStatusResponse
+} from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -24,7 +34,10 @@ api.interceptors.request.use((config) => {
 export const authService = {
   login: async (data: LoginRequest): Promise<AuthResponse> => {
     const response = await api.post<AuthResponse>('/api/auth/login', data);
-    localStorage.setItem('token', response.data.token);
+    // Only store token if MFA is not required
+    if (!response.data.mfaRequired) {
+      localStorage.setItem('token', response.data.token);
+    }
     return response.data;
   },
 
@@ -41,6 +54,57 @@ export const authService = {
   getToken: () => localStorage.getItem('token'),
 
   isAuthenticated: () => !!localStorage.getItem('token'),
+};
+
+// MFA services
+export const mfaService = {
+  // Get MFA status for current user
+  getStatus: async (): Promise<MfaStatusResponse> => {
+    const response = await api.get<MfaStatusResponse>('/api/auth/mfa/status');
+    return response.data;
+  },
+
+  // Initiate MFA setup - returns secret and QR code URI
+  initiateSetup: async (): Promise<MfaSetupResponse> => {
+    const response = await api.post<MfaSetupResponse>('/api/auth/mfa/setup');
+    return response.data;
+  },
+
+  // Complete MFA setup by verifying the first code
+  completeSetup: async (data: MfaSetupVerifyRequest): Promise<MfaSetupCompleteResponse> => {
+    const response = await api.post<MfaSetupCompleteResponse>('/api/auth/mfa/setup/verify', data);
+    return response.data;
+  },
+
+  // Verify MFA code during login
+  verifyCode: async (code: string, mfaToken?: string): Promise<{ success: boolean; message: string; token?: string }> => {
+    const config = mfaToken 
+      ? { headers: { Authorization: `Bearer ${mfaToken}` } }
+      : {};
+    const response = await api.post('/api/auth/mfa/verify', { code }, config);
+    return response.data;
+  },
+
+  // Verify backup code during login
+  verifyBackupCode: async (backupCode: string, mfaToken?: string): Promise<{ success: boolean; message: string; token?: string; remainingBackupCodes?: number }> => {
+    const config = mfaToken 
+      ? { headers: { Authorization: `Bearer ${mfaToken}` } }
+      : {};
+    const response = await api.post('/api/auth/mfa/backup', { backupCode }, config);
+    return response.data;
+  },
+
+  // Disable MFA
+  disable: async (password: string, code: string): Promise<{ mfaEnabled: boolean; message: string }> => {
+    const response = await api.post('/api/auth/mfa/disable', { password, code });
+    return response.data;
+  },
+
+  // Regenerate backup codes
+  regenerateBackupCodes: async (code: string): Promise<{ backupCodes: string[]; message: string }> => {
+    const response = await api.post('/api/auth/mfa/backup-codes', { code });
+    return response.data;
+  },
 };
 
 // Audit services
@@ -72,7 +136,7 @@ export const aiService = {
   },
 };
 
-// Admin services 
+// Admin services
 export const adminService = {
   getAllUsers: async (): Promise<UserResponse[]> => {
     const response = await api.get<UserResponse[]>('/api/admin/users');

@@ -10,6 +10,16 @@ import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import java.time.Instant
 
+/**
+ * Result of a login attempt
+ */
+data class LoginResult(
+    val token: String,
+    val username: String,
+    val roles: List<String>,
+    val mfaRequired: Boolean
+)
+
 @Service
 class AuthService(
     private val userRepository: UserRepository,
@@ -65,7 +75,11 @@ class AuthService(
         return savedUser
     }
 
-    fun login(username: String, password: String, ipAddress: String? = null): String {
+    /**
+     * Authenticate user and return login result.
+     * If MFA is enabled, returns mfaRequired=true and a temporary token.
+     */
+    fun login(username: String, password: String, ipAddress: String? = null): LoginResult {
         val user = userRepository.findByUsername(username).orElse(null)
 
         if (user == null) {
@@ -101,6 +115,32 @@ class AuthService(
             throw IllegalArgumentException("Account is disabled")
         }
 
+        val roles = user.roles.map { it.name }
+        
+        // Check if MFA is enabled
+        if (user.mfaEnabled) {
+            auditService.log(
+                action = "LOGIN_MFA_REQUIRED",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress,
+                details = "MFA verification required"
+            )
+            
+            // Generate a temporary token that requires MFA verification
+            // This token has a shorter expiry and is marked as pending MFA
+            val tempToken = jwtService.generateMfaPendingToken(user.username, roles)
+            
+            return LoginResult(
+                token = tempToken,
+                username = user.username,
+                roles = roles,
+                mfaRequired = true
+            )
+        }
+
+        // No MFA - complete login
         userRepository.save(user.copy(lastLogin = Instant.now()))
 
         auditService.log(
@@ -111,6 +151,34 @@ class AuthService(
             ipAddress = ipAddress
         )
 
+        val token = jwtService.generateToken(user.username, roles)
+        return LoginResult(
+            token = token,
+            username = user.username,
+            roles = roles,
+            mfaRequired = false
+        )
+    }
+    
+    /**
+     * Complete login after MFA verification
+     */
+    fun completeMfaLogin(username: String, ipAddress: String? = null): String {
+        val user = userRepository.findByUsername(username).orElseThrow {
+            IllegalArgumentException("User not found")
+        }
+        
+        userRepository.save(user.copy(lastLogin = Instant.now()))
+        
+        auditService.log(
+            action = "USER_LOGIN",
+            username = username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = ipAddress,
+            details = "Login completed after MFA verification"
+        )
+        
         val roles = user.roles.map { it.name }
         return jwtService.generateToken(user.username, roles)
     }
