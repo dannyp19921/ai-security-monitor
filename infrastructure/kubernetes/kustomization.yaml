@@ -1,0 +1,36 @@
+# Kustomization file for AI Security Monitor
+# Allows applying all resources with a single command:
+#   kubectl apply -k infrastructure/kubernetes/
+#
+# Key concepts:
+# - Declarative configuration management
+# - Environment-specific overlays
+# - Resource generation (ConfigMaps, Secrets from files)
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: ai-security-monitor
+
+# Namespace for all resources
+namespace: ai-security-monitor
+
+# Resources to include (order matters for dependencies)
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - ingress.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/name: ai-security-monitor
+  app.kubernetes.io/managed-by: kustomize
+
+# Common annotations
+commonAnnotations:
+  app.kubernetes.io/version: "1.0.0"

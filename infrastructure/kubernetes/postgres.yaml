@@ -1,0 +1,125 @@
+# PostgreSQL Deployment for AI Security Monitor
+# Provides the database backend
+#
+# NOTE: For production, consider using:
+# - Managed database service (AWS RDS, Azure Database, Google Cloud SQL)
+# - PostgreSQL Operator (CrunchyData, Zalando)
+# - StatefulSet with persistent storage
+#
+# This is a simple deployment suitable for development/testing
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  replicas: 1  # Single instance for simplicity
+  selector:
+    matchLabels:
+      app: ai-security-monitor
+      component: database
+  
+  template:
+    metadata:
+      labels:
+        app: ai-security-monitor
+        component: database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          
+          ports:
+            - containerPort: 5432
+              name: postgres
+          
+          env:
+            - name: POSTGRES_DB
+              value: securemonitor
+            - name: POSTGRES_USER
+              value: securemonitor
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-security-monitor-secrets
+                  key: database-password
+            # Improve performance for development
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: md5
+          
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          
+          # Persistent storage
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          
+          # Health check
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - securemonitor
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - securemonitor
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+---
+# Service for PostgreSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-security-monitor
+    component: database
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+
+---
+# Persistent Volume Claim for PostgreSQL data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Use default storage class
+  # storageClassName: standard

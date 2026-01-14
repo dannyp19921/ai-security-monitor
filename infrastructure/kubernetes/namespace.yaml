@@ -1,0 +1,18 @@
+# Kubernetes Namespace for AI Security Monitor
+# Isolates resources and provides RBAC boundary
+#
+# Key concepts:
+# - Resource isolation
+# - Network policies can be applied per namespace
+# - Resource quotas can limit resource usage
+# - RBAC can control access per namespace
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-security-monitor
+  labels:
+    app: ai-security-monitor
+    environment: production
+  annotations:
+    description: "AI Security Monitor - IAM demonstration application"

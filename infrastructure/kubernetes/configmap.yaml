@@ -1,0 +1,33 @@
+# Kubernetes ConfigMap for AI Security Monitor
+# Stores non-sensitive configuration as key-value pairs
+#
+# Key concepts:
+# - Separates config from code (12-factor app principle)
+# - Can be updated without rebuilding container
+# - Mounted as environment variables or files
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-security-monitor-config
+  labels:
+    app: ai-security-monitor
+data:
+  # Database configuration
+  PGHOST: "postgres-service"  # Kubernetes service name
+  PGPORT: "5432"
+  PGDATABASE: "securemonitor"
+  PGUSER: "securemonitor"
+  
+  # Application configuration
+  PORT: "8080"
+  
+  # OAuth2 / OIDC configuration
+  OAUTH2_ISSUER: "https://ai-security-monitor.example.com"
+  
+  # Spring profiles
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  
+  # Logging
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_SECUREMONITOR: "DEBUG"

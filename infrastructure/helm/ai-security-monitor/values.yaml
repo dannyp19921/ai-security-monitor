@@ -1,0 +1,150 @@
+# Default values for ai-security-monitor
+# This is a YAML-formatted file.
+
+# -- Number of backend replicas
+replicaCount: 2
+
+image:
+  # -- Container image repository
+  repository: ai-security-monitor-backend
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default is appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the name of the chart
+nameOverride: ""
+
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations for the service account
+  annotations: {}
+  # -- Name of the service account (generated if not set)
+  name: ""
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# -- Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 80
+
+ingress:
+  # -- Enable ingress
+  enabled: true
+  # -- Ingress class name
+  className: nginx
+  # -- Ingress annotations
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+  # -- Ingress hosts configuration
+  hosts:
+    - host: api.ai-security-monitor.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls:
+    - secretName: ai-security-monitor-tls
+      hosts:
+        - api.ai-security-monitor.example.com
+
+# -- Resource requests and limits
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+# -- Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# Application configuration
+config:
+  # -- OAuth2 issuer URL
+  oauth2Issuer: "https://api.ai-security-monitor.example.com"
+  # -- Spring profiles
+  springProfiles: "kubernetes"
+  # -- Log level
+  logLevel: "INFO"
+
+# Secrets configuration
+secrets:
+  # -- Create secrets (set to false if using external secrets)
+  create: true
+  # -- Database password (use external secrets in production!)
+  databasePassword: "change-me-in-production"
+  # -- JWT signing secret (min 32 characters)
+  jwtSecret: "change-me-in-production-min-32-chars!"
+  # -- Groq API key
+  groqApiKey: ""
+
+# PostgreSQL configuration (using Bitnami subchart)
+postgresql:
+  # -- Enable PostgreSQL subchart
+  enabled: true
+  auth:
+    # -- PostgreSQL username
+    username: securemonitor
+    # -- PostgreSQL database name
+    database: securemonitor
+    # -- Use existing secret for password
+    existingSecret: ""
+  primary:
+    persistence:
+      # -- Enable persistence
+      enabled: true
+      # -- Persistence size
+      size: 1Gi
+
+# Health check configuration
+healthCheck:
+  # -- Liveness probe path
+  livenessPath: /api/health
+  # -- Readiness probe path
+  readinessPath: /api/health
+  # -- Initial delay for liveness probe
+  livenessInitialDelay: 30
+  # -- Initial delay for readiness probe
+  readinessInitialDelay: 10

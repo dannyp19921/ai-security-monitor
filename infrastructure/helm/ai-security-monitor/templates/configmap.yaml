@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}-config
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+data:
+  PGHOST: {{ include "ai-security-monitor.postgresql.host" . | quote }}
+  PGPORT: "5432"
+  PGDATABASE: {{ .Values.postgresql.auth.database | quote }}
+  PGUSER: {{ .Values.postgresql.auth.username | quote }}
+  PORT: "8080"
+  OAUTH2_ISSUER: {{ .Values.config.oauth2Issuer | quote }}
+  SPRING_PROFILES_ACTIVE: {{ .Values.config.springProfiles | quote }}
+  LOGGING_LEVEL_ROOT: {{ .Values.config.logLevel | quote }}
+  LOGGING_LEVEL_COM_SECUREMONITOR: "DEBUG"

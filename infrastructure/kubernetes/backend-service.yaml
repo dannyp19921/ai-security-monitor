@@ -1,0 +1,27 @@
+# Kubernetes Service for AI Security Monitor Backend
+# Provides stable network endpoint for the backend pods
+#
+# Key concepts:
+# - ClusterIP for internal communication
+# - Service discovery via DNS (ai-security-monitor-backend.namespace.svc.cluster.local)
+# - Load balancing across pods
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-security-monitor-backend
+  labels:
+    app: ai-security-monitor
+    component: backend
+spec:
+  type: ClusterIP  # Internal only - Ingress handles external traffic
+  
+  selector:
+    app: ai-security-monitor
+    component: backend
+  
+  ports:
+    - name: http
+      port: 80           # Service port
+      targetPort: http   # Container port (8080)
+      protocol: TCP

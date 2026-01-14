@@ -1,0 +1,29 @@
+apiVersion: v2
+name: ai-security-monitor
+description: A Helm chart for AI Security Monitor - IAM demonstration with OAuth2/OIDC
+
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - iam
+  - oauth2
+  - oidc
+  - security
+  - kotlin
+  - spring-boot
+
+home: https://github.com/dannyp19921/ai-security-monitor
+sources:
+  - https://github.com/dannyp19921/ai-security-monitor
+
+maintainers:
+  - name: Daniel-Aston Brandsgård Parker
+    email: daniel@example.com
+
+dependencies:
+  - name: postgresql
+    version: "12.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
