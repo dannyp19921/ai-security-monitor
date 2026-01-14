@@ -133,6 +133,7 @@ frontend/
       auth/
         LoginForm.tsx
         RegisterForm.tsx
+        SocialLogin.tsx
       chat/
         AiChat.tsx
       ui/
@@ -143,6 +144,7 @@ frontend/
     pages/
       DashboardPage.tsx
       LoginPage.tsx
+      OAuth2CallbackPage.tsx
     services/
       api.ts
     types/
@@ -186,121 +188,12 @@ infrastructure/
   README.md
 .gitignore
 docker-compose.yml
+oidc-consumer-frontend.zip
 README.md
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt">
-// backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt
-package com.securemonitor.security
-
-import com.securemonitor.model.User
-import com.securemonitor.repository.RoleRepository
-import com.securemonitor.repository.UserRepository
-import com.securemonitor.service.AuditService
-import jakarta.servlet.http.HttpServletRequest
-import jakarta.servlet.http.HttpServletResponse
-import org.springframework.security.core.Authentication
-import org.springframework.security.crypto.password.PasswordEncoder
-import org.springframework.security.oauth2.core.user.OAuth2User
-import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler
-import org.springframework.stereotype.Component
-import org.springframework.web.util.UriComponentsBuilder
-import java.util.*
-
-/**
- * Custom success handler for OAuth2 login.
- * 
- * Flow:
- * 1. User authenticates with Google
- * 2. We receive OAuth2User with Google profile info
- * 3. We map to local User (create if doesn't exist)
- * 4. We generate JWT token
- * 5. We redirect to frontend with JWT as query parameter
- */
-@Component
-class OAuth2AuthenticationSuccessHandler(
-    private val jwtService: JwtService,
-    private val userRepository: UserRepository,
-    private val roleRepository: RoleRepository,
-    private val passwordEncoder: PasswordEncoder,
-    private val auditService: AuditService
-) : SimpleUrlAuthenticationSuccessHandler() {
-
-    override fun onAuthenticationSuccess(
-        request: HttpServletRequest,
-        response: HttpServletResponse,
-        authentication: Authentication
-    ) {
-        val oauth2User = authentication.principal as OAuth2User
-        
-        // Extract user info from Google
-        val email = oauth2User.getAttribute<String>("email") 
-            ?: throw IllegalStateException("Email not available from OAuth2 provider")
-        val name = oauth2User.getAttribute<String>("name") ?: email
-        val givenName = oauth2User.getAttribute<String>("given_name") ?: ""
-        val familyName = oauth2User.getAttribute<String>("family_name") ?: ""
-        
-        // Find or create local user
-        val user = userRepository.findByUsername(email).orElseGet {
-            createNewUser(email, name, givenName, familyName)
-        }
-        
-        // Generate JWT token
-        val token = jwtService.generateToken(user.username, user.roles.map { it.name })
-        
-        // Log successful OAuth2 login
-        auditService.log(
-            action = "OAUTH2_LOGIN_SUCCESS",
-            username = user.username,
-            resourceType = "USER",
-            resourceId = user.id.toString(),
-            ipAddress = request.remoteAddr,
-            details = "Logged in via Google OAuth2",
-            success = true
-        )
-        
-        // Redirect to frontend with JWT token
-        val targetUrl = buildRedirectUrl(token)
-        
-        logger.debug("Redirecting OAuth2 user ${user.username} to: $targetUrl")
-        
-        redirectStrategy.sendRedirect(request, response, targetUrl)
-    }
-    
-    private fun createNewUser(email: String, name: String, givenName: String, familyName: String): User {
-        logger.info("Creating new user from OAuth2 login: $email")
-        
-        val userRole = roleRepository.findByName("USER")
-            .orElseThrow { IllegalStateException("USER role not found in database") }
-        
-        val newUser = User(
-            username = email,
-            email = email,  
-            // Generate random password (user won't use it - they login via OAuth2)
-            passwordHash = passwordEncoder.encode(UUID.randomUUID().toString()),
-            roles = mutableSetOf(userRole)
-        )
-        
-        return userRepository.save(newUser)
-    }
-    
-    private fun buildRedirectUrl(token: String): String {
-        // Redirect to frontend with JWT token as query parameter
-        // Frontend will extract token and store it
-        val frontendUrl = System.getenv("FRONTEND_URL") 
-            ?: "http://localhost:5173"
-        
-        return UriComponentsBuilder.fromUriString(frontendUrl)
-            .path("/oauth2/callback")
-            .queryParam("token", token)
-            .build()
-            .toUriString()
-    }
-}
-</file>
 
 <file path="backend/gradle/wrapper/gradle-wrapper.properties">
 distributionBase=GRADLE_USER_HOME
@@ -2445,6 +2338,86 @@ class JwtService {
 }
 </file>
 
+<file path="backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt">
+// backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt
+package com.securemonitor.security
+
+import com.securemonitor.model.User
+import com.securemonitor.repository.RoleRepository
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.service.AuditService
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.springframework.security.core.Authentication
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.security.oauth2.core.user.OAuth2User
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler
+import org.springframework.stereotype.Component
+import org.springframework.web.util.UriComponentsBuilder
+import java.util.*
+
+@Component
+class OAuth2AuthenticationSuccessHandler(
+    private val jwtService: JwtService,
+    private val userRepository: UserRepository,
+    private val roleRepository: RoleRepository,
+    private val passwordEncoder: PasswordEncoder,
+    private val auditService: AuditService
+) : SimpleUrlAuthenticationSuccessHandler() {
+
+    override fun onAuthenticationSuccess(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        authentication: Authentication
+    ) {
+        val oauth2User = authentication.principal as OAuth2User
+        
+        val email = oauth2User.getAttribute<String>("email") 
+            ?: throw IllegalStateException("Email not available from OAuth2 provider")
+        
+        // Find existing user by EMAIL or create new
+        val user = userRepository.findByEmail(email).orElseGet {
+            createNewUser(email)
+        }
+        
+        val token = jwtService.generateToken(user.username, user.roles.map { it.name })
+        
+        auditService.log(
+            action = "OAUTH2_LOGIN_SUCCESS",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = request.remoteAddr,
+            details = "Logged in via Google OAuth2",
+            success = true
+        )
+        
+        val frontendUrl = System.getenv("FRONTEND_URL") ?: "http://localhost:5173"
+        val targetUrl = UriComponentsBuilder.fromUriString(frontendUrl)
+            .path("/oauth2/callback")
+            .queryParam("token", token)
+            .build()
+            .toUriString()
+        
+        redirectStrategy.sendRedirect(request, response, targetUrl)
+    }
+    
+    private fun createNewUser(email: String): User {
+        logger.info("Creating new user from OAuth2 login: $email")
+        
+        val userRole = roleRepository.findByName("USER")
+            .orElseThrow { IllegalStateException("USER role not found") }
+        
+        return userRepository.save(User(
+            username = email,
+            email = email,
+            passwordHash = passwordEncoder.encode(UUID.randomUUID().toString()),
+            roles = mutableSetOf(userRole)
+        ))
+    }
+}
+</file>
+
 <file path="backend/src/main/kotlin/com/securemonitor/service/AiService.kt">
 // backend/src/main/kotlin/com/securemonitor/service/AiService.kt
 package com.securemonitor.service
@@ -2577,366 +2550,6 @@ class AuditService(
 
     fun getLogsByTimeRange(start: Instant, end: Instant): List<AuditLog> {
         return auditLogRepository.findByTimestampBetweenOrderByTimestampDesc(start, end)
-    }
-}
-</file>
-
-<file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/AuthorizationServiceTest.kt">
-package com.securemonitor.oauth2.service
-
-import com.securemonitor.oauth2.dto.AuthorizationRequest
-import com.securemonitor.oauth2.exception.OAuth2Exception
-import com.securemonitor.oauth2.model.AuthorizationCode
-import com.securemonitor.oauth2.model.OAuth2Client
-import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
-import com.securemonitor.oauth2.repository.OAuth2ClientRepository
-import com.securemonitor.service.AuditService
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.DisplayName
-import org.junit.jupiter.api.Nested
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
-import org.junit.jupiter.api.extension.ExtendWith
-import org.mockito.Mock
-import org.mockito.junit.jupiter.MockitoExtension
-import org.mockito.kotlin.*
-import org.assertj.core.api.Assertions.assertThat
-import java.util.Optional
-
-/**
- * Test suite for AuthorizationService.
- * 
- * Tests the authorization endpoint logic including:
- * - Request validation
- * - Client validation
- * - PKCE handling
- * - Authorization code generation
- */
-@ExtendWith(MockitoExtension::class)
-@DisplayName("AuthorizationService")
-class AuthorizationServiceTest {
-
-    @Mock
-    private lateinit var clientRepository: OAuth2ClientRepository
-    
-    @Mock
-    private lateinit var codeRepository: AuthorizationCodeRepository
-    
-    @Mock
-    private lateinit var pkceService: PkceService
-    
-    @Mock
-    private lateinit var auditService: AuditService
-
-    private lateinit var authorizationService: AuthorizationService
-
-    private val testClient = OAuth2Client(
-        id = 1L,
-        clientId = "test-client",
-        clientSecretHash = null,
-        clientName = "Test Client",
-        confidential = false,
-        redirectUris = "http://localhost:3000/callback,https://example.com/callback",
-        allowedScopes = "openid profile email",
-        allowedGrantTypes = "authorization_code refresh_token",
-        requirePkce = true
-    )
-
-    @BeforeEach
-    fun setUp() {
-        authorizationService = AuthorizationService(
-            clientRepository = clientRepository,
-            codeRepository = codeRepository,
-            pkceService = pkceService,
-            auditService = auditService
-        )
-    }
-
-    @Nested
-    @DisplayName("validateAuthorizationRequest")
-    inner class ValidateAuthorizationRequest {
-
-        @Test
-        @DisplayName("should accept valid authorization request with PKCE")
-        fun shouldAcceptValidRequest() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback",
-                scope = "openid profile",
-                state = "abc123",
-                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-                codeChallengeMethod = "S256"
-            )
-            
-            whenever(clientRepository.findByClientId("test-client"))
-                .thenReturn(Optional.of(testClient))
-            
-            // Should not throw
-            val validatedClient = authorizationService.validateAuthorizationRequest(request)
-            
-            assertThat(validatedClient.clientId).isEqualTo("test-client")
-        }
-
-        @Test
-        @DisplayName("should reject request with unsupported response_type")
-        fun shouldRejectUnsupportedResponseType() {
-            val request = AuthorizationRequest(
-                responseType = "token", // implicit flow - not supported
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback"
-            )
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("unsupported_response_type")
-        }
-
-        @Test
-        @DisplayName("should reject request with unknown client_id")
-        fun shouldRejectUnknownClient() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "unknown-client",
-                redirectUri = "http://localhost:3000/callback"
-            )
-            
-            whenever(clientRepository.findByClientId("unknown-client"))
-                .thenReturn(Optional.empty())
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("invalid_client")
-        }
-
-        @Test
-        @DisplayName("should reject request with mismatched redirect_uri")
-        fun shouldRejectMismatchedRedirectUri() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://evil.com/callback" // not registered
-            )
-            
-            whenever(clientRepository.findByClientId("test-client"))
-                .thenReturn(Optional.of(testClient))
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("invalid_request")
-            assertThat(exception.errorDescription).contains("redirect_uri")
-        }
-
-        @Test
-        @DisplayName("should reject request with invalid scope")
-        fun shouldRejectInvalidScope() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback",
-                scope = "openid admin" // 'admin' not allowed
-            )
-            
-            whenever(clientRepository.findByClientId("test-client"))
-                .thenReturn(Optional.of(testClient))
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("invalid_scope")
-        }
-
-        @Test
-        @DisplayName("should reject request missing PKCE when required")
-        fun shouldRejectMissingPkce() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback",
-                codeChallenge = null // missing PKCE
-            )
-            
-            whenever(clientRepository.findByClientId("test-client"))
-                .thenReturn(Optional.of(testClient))
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("invalid_request")
-            assertThat(exception.errorDescription).contains("PKCE")
-        }
-
-        @Test
-        @DisplayName("should reject disabled client")
-        fun shouldRejectDisabledClient() {
-            val disabledClient = testClient.copy(enabled = false)
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback"
-            )
-            
-            whenever(clientRepository.findByClientId("test-client"))
-                .thenReturn(Optional.of(disabledClient))
-            
-            val exception = assertThrows<OAuth2Exception> {
-                authorizationService.validateAuthorizationRequest(request)
-            }
-            
-            assertThat(exception.error).isEqualTo("invalid_client")
-        }
-    }
-
-    @Nested
-    @DisplayName("createAuthorizationCode")
-    inner class CreateAuthorizationCode {
-
-        @Test
-        @DisplayName("should create authorization code with all parameters")
-        fun shouldCreateCodeWithAllParameters() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback",
-                scope = "openid profile",
-                state = "abc123",
-                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-                codeChallengeMethod = "S256",
-                nonce = "nonce123"
-            )
-            
-            whenever(codeRepository.save(any<AuthorizationCode>()))
-                .thenAnswer { it.arguments[0] as AuthorizationCode }
-            
-            val code = authorizationService.createAuthorizationCode(
-                client = testClient,
-                request = request,
-                userId = 42L,
-                username = "testuser"
-            )
-            
-            assertThat(code.code).isNotBlank()
-            assertThat(code.code.length).isGreaterThanOrEqualTo(32)
-            assertThat(code.clientId).isEqualTo("test-client")
-            assertThat(code.userId).isEqualTo(42L)
-            assertThat(code.username).isEqualTo("testuser")
-            assertThat(code.redirectUri).isEqualTo("http://localhost:3000/callback")
-            assertThat(code.scope).isEqualTo("openid profile")
-            assertThat(code.codeChallenge).isEqualTo("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
-            assertThat(code.codeChallengeMethod).isEqualTo("S256")
-            assertThat(code.nonce).isEqualTo("nonce123")
-            assertThat(code.used).isFalse()
-            
-            verify(codeRepository).save(any())
-            verify(auditService).log(
-                action = eq("OAUTH2_CODE_ISSUED"),
-                username = eq("testuser"),
-                resourceType = eq("OAUTH2_CLIENT"),
-                resourceId = eq("test-client"),
-                ipAddress = anyOrNull(),
-                details = anyOrNull(),
-                success = eq(true)
-            )
-        }
-
-        @Test
-        @DisplayName("should generate unique codes")
-        fun shouldGenerateUniqueCodes() {
-            val request = AuthorizationRequest(
-                responseType = "code",
-                clientId = "test-client",
-                redirectUri = "http://localhost:3000/callback"
-            )
-            
-            whenever(codeRepository.save(any<AuthorizationCode>()))
-                .thenAnswer { it.arguments[0] as AuthorizationCode }
-            
-            val codes = (1..100).map {
-                authorizationService.createAuthorizationCode(
-                    client = testClient,
-                    request = request,
-                    userId = 1L,
-                    username = "user"
-                ).code
-            }.toSet()
-            
-            assertThat(codes).hasSize(100)
-        }
-    }
-
-    @Nested
-    @DisplayName("buildAuthorizationRedirect")
-    inner class BuildAuthorizationRedirect {
-
-        @Test
-        @DisplayName("should build redirect URI with code and state")
-        fun shouldBuildRedirectWithCodeAndState() {
-            val redirectUri = authorizationService.buildAuthorizationRedirect(
-                baseRedirectUri = "http://localhost:3000/callback",
-                code = "auth-code-123",
-                state = "state-abc"
-            )
-            
-            assertThat(redirectUri).isEqualTo(
-                "http://localhost:3000/callback?code=auth-code-123&state=state-abc"
-            )
-        }
-
-        @Test
-        @DisplayName("should build redirect URI without state when not provided")
-        fun shouldBuildRedirectWithoutState() {
-            val redirectUri = authorizationService.buildAuthorizationRedirect(
-                baseRedirectUri = "http://localhost:3000/callback",
-                code = "auth-code-123",
-                state = null
-            )
-            
-            assertThat(redirectUri).isEqualTo(
-                "http://localhost:3000/callback?code=auth-code-123"
-            )
-        }
-
-        @Test
-        @DisplayName("should preserve existing query parameters")
-        fun shouldPreserveExistingQueryParams() {
-            val redirectUri = authorizationService.buildAuthorizationRedirect(
-                baseRedirectUri = "http://localhost:3000/callback?existing=param",
-                code = "auth-code-123",
-                state = "state-abc"
-            )
-            
-            assertThat(redirectUri).contains("existing=param")
-            assertThat(redirectUri).contains("code=auth-code-123")
-            assertThat(redirectUri).contains("state=state-abc")
-        }
-    }
-
-    @Nested
-    @DisplayName("buildErrorRedirect")
-    inner class BuildErrorRedirect {
-
-        @Test
-        @DisplayName("should build error redirect with all parameters")
-        fun shouldBuildErrorRedirect() {
-            val redirectUri = authorizationService.buildErrorRedirect(
-                baseRedirectUri = "http://localhost:3000/callback",
-                error = "access_denied",
-                errorDescription = "User denied consent",
-                state = "state-abc"
-            )
-            
-            assertThat(redirectUri).contains("error=access_denied")
-            assertThat(redirectUri).contains("error_description=User")
-            assertThat(redirectUri).contains("state=state-abc")
-        }
     }
 }
 </file>
@@ -3464,50 +3077,6 @@ class BackendApplicationTests {
 /gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
-</file>
-
-<file path="backend/.gitignore">
-HELP.md
-.gradle
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
-
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-
-### VS Code ###
-.vscode/
-
-### Kotlin ###
-.kotlin
-.env
 </file>
 
 <file path="backend/Dockerfile">
@@ -4105,92 +3674,6 @@ export function AdminPanel() {
 }
 </file>
 
-<file path="frontend/src/components/auth/LoginForm.tsx">
-// frontend/src/components/auth/LoginForm.tsx
-import { useState } from 'react';
-import type { FormEvent } from 'react';
-import { Button } from '../ui/Button';
-import { Input } from '../ui/Input';
-
-interface LoginFormProps {
-  onSubmit: (username: string, password: string) => Promise<void>;
-  onSwitchToRegister: () => void;
-}
-
-export function LoginForm({ onSubmit, onSwitchToRegister }: LoginFormProps) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setIsLoading(true);
-
-    try {
-      await onSubmit(username, password);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold text-gray-900">Welcome Back</h1>
-        <p className="mt-2 text-gray-600">Sign in to your account</p>
-      </div>
-
-      {error && (
-        <div className="p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
-          <p className="text-sm text-red-600">{error}</p>
-        </div>
-      )}
-
-      <div className="space-y-4">
-        <Input
-          label="Username"
-          type="text"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          required
-          autoComplete="username"
-          placeholder="Enter your username"
-        />
-
-        <Input
-          label="Password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          autoComplete="current-password"
-          placeholder="Enter your password"
-        />
-      </div>
-
-      <Button type="submit" isLoading={isLoading}>
-        Sign In
-      </Button>
-
-      <p className="text-center text-sm text-gray-600">
-        Don't have an account?{' '}
-        <button
-          type="button"
-          onClick={onSwitchToRegister}
-          className="text-blue-600 hover:text-blue-800 font-medium"
-        >
-          Register here
-        </button>
-      </p>
-    </form>
-  );
-}
-</file>
-
 <file path="frontend/src/components/auth/RegisterForm.tsx">
 // frontend/src/components/auth/RegisterForm.tsx
 import { useState } from 'react';
@@ -4308,6 +3791,113 @@ export function RegisterForm({ onSubmit, onSwitchToLogin }: RegisterFormProps) {
     </form>
   );
 }
+</file>
+
+<file path="frontend/src/components/auth/SocialLogin.tsx">
+// frontend/src/components/auth/SocialLogin.tsx
+import { useState } from 'react';
+
+interface SocialLoginProps {
+  /** Backend base URL */
+  backendUrl?: string;
+}
+
+/**
+ * Social login buttons for OAuth2 federated authentication.
+ * 
+ * Demonstrates:
+ * - OAuth2 Consumer flow initiation
+ * - Federation with external IDPs (Google)
+ */
+export function SocialLogin({ 
+  backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+}: SocialLoginProps) {
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleGoogleLogin = () => {
+    setIsLoading(true);
+    // Redirect to backend OAuth2 authorization endpoint
+    // Spring Security will handle the OAuth2 flow with Google
+    window.location.href = `${backendUrl}/oauth2/authorization/google`;
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-gray-200" />
+        </div>
+        <div className="relative flex justify-center text-sm">
+          <span className="px-2 bg-white text-gray-500">Or continue with</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleGoogleLogin}
+        disabled={isLoading}
+        className="w-full inline-flex justify-center items-center px-4 py-2.5 border border-gray-300 rounded-lg shadow-sm bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {isLoading ? (
+          <LoadingSpinner />
+        ) : (
+          <>
+            <GoogleIcon />
+            <span className="ml-2">Sign in with Google</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// Google Icon SVG
+function GoogleIcon() {
+  return (
+    <svg className="w-5 h-5" viewBox="0 0 24 24">
+      <path
+        fill="#4285F4"
+        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+      />
+    </svg>
+  );
+}
+
+// Loading Spinner
+function LoadingSpinner() {
+  return (
+    <svg className="animate-spin h-5 w-5 text-gray-400" viewBox="0 0 24 24">
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+        fill="none"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
+    </svg>
+  );
+}
+
+export default SocialLogin;
 </file>
 
 <file path="frontend/src/components/chat/AiChat.tsx">
@@ -4620,51 +4210,109 @@ export function useAuth() {
 }
 </file>
 
-<file path="frontend/src/pages/LoginPage.tsx">
-// frontend/src/pages/LoginPage.tsx
-import { useState } from 'react';
-import { LoginForm } from '../components/auth/LoginForm';
-import { RegisterForm } from '../components/auth/RegisterForm';
-import { useAuth } from '../hooks/useAuth';
+<file path="frontend/src/pages/OAuth2CallbackPage.tsx">
+// frontend/src/pages/OAuth2CallbackPage.tsx
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
-interface LoginPageProps {
-  onSuccess: () => void;
+interface OAuth2CallbackPageProps {
+  onLoginSuccess: (token: string) => void;
 }
 
-export function LoginPage({ onSuccess }: LoginPageProps) {
-  const [isLogin, setIsLogin] = useState(true);
-  const { login, register } = useAuth();
+/**
+ * OAuth2 Callback Page
+ * 
+ * This page handles the redirect from the backend after successful OAuth2 login.
+ * The backend redirects here with the JWT token as a query parameter.
+ * 
+ * Flow:
+ * 1. User clicks "Sign in with Google"
+ * 2. Backend redirects to Google
+ * 3. User authenticates with Google
+ * 4. Google redirects back to backend
+ * 5. Backend creates/finds user, generates JWT
+ * 6. Backend redirects here with ?token=JWT
+ * 7. We extract token, store it, redirect to dashboard
+ */
+export function OAuth2CallbackPage({ onLoginSuccess }: OAuth2CallbackPageProps) {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = async (username: string, password: string) => {
-    await login({ username, password });
-    onSuccess();
-  };
+  useEffect(() => {
+    const token = searchParams.get('token');
+    const errorParam = searchParams.get('error');
 
-  const handleRegister = async (username: string, email: string, password: string) => {
-    await register({ username, email, password });
-    onSuccess();
-  };
+    if (errorParam) {
+      setError(`OAuth2 login failed: ${errorParam}`);
+      // Redirect to login after showing error
+      setTimeout(() => navigate('/login'), 3000);
+      return;
+    }
+
+    if (token) {
+      // Store token and notify parent
+      localStorage.setItem('token', token);
+      onLoginSuccess(token);
+      
+      // Redirect to dashboard
+      navigate('/dashboard', { replace: true });
+    } else {
+      setError('No token received from OAuth2 provider');
+      setTimeout(() => navigate('/login'), 3000);
+    }
+  }, [searchParams, navigate, onLoginSuccess]);
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full">
+          <div className="text-center">
+            <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 mb-4">
+              <svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Login Failed</h2>
+            <p className="text-gray-500 mb-4">{error}</p>
+            <p className="text-sm text-gray-400">Redirecting to login...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center px-4 py-12">
-      <div className="w-full max-w-md mx-auto">
-        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
-          {isLogin ? (
-            <LoginForm
-              onSubmit={handleLogin}
-              onSwitchToRegister={() => setIsLogin(false)}
-            />
-          ) : (
-            <RegisterForm
-              onSubmit={handleRegister}
-              onSwitchToLogin={() => setIsLogin(true)}
-            />
-          )}
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full">
+        <div className="text-center">
+          <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 mb-4">
+            <svg className="animate-spin h-6 w-6 text-blue-600" viewBox="0 0 24 24">
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Completing Login</h2>
+          <p className="text-gray-500">Please wait while we complete your login...</p>
         </div>
       </div>
     </div>
   );
 }
+
+export default OAuth2CallbackPage;
 </file>
 
 <file path="frontend/src/App.css">
@@ -4710,43 +4358,6 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
 .read-the-docs {
   color: #888;
 }
-</file>
-
-<file path="frontend/src/App.tsx">
-// frontend/src/App.tsx
-import { useState, useEffect } from 'react';
-import { LoginPage } from './pages/LoginPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { authService } from './services/api';
-
-function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    setIsAuthenticated(authService.isAuthenticated());
-    setIsLoading(false);
-  }, []);
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <svg className="animate-spin h-10 w-10 text-blue-600" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return <LoginPage onSuccess={() => setIsAuthenticated(true)} />;
-  }
-
-  return <DashboardPage onLogout={() => setIsAuthenticated(false)} />;
-}
-
-export default App;
 </file>
 
 <file path="frontend/src/index.css">
@@ -7093,6 +6704,594 @@ class TokenService(
 }
 </file>
 
+<file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/AuthorizationServiceTest.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.dto.AuthorizationRequest
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.model.AuthorizationCode
+import com.securemonitor.oauth2.model.OAuth2Client
+import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import com.securemonitor.service.AuditService
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.extension.ExtendWith
+import org.mockito.Mock
+import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.kotlin.*
+import org.assertj.core.api.Assertions.assertThat
+import java.util.Optional
+
+/**
+ * Test suite for AuthorizationService.
+ * 
+ * Tests the authorization endpoint logic including:
+ * - Request validation
+ * - Client validation
+ * - PKCE handling
+ * - Authorization code generation
+ */
+@ExtendWith(MockitoExtension::class)
+@DisplayName("AuthorizationService")
+class AuthorizationServiceTest {
+
+    @Mock
+    private lateinit var clientRepository: OAuth2ClientRepository
+    
+    @Mock
+    private lateinit var codeRepository: AuthorizationCodeRepository
+    
+    @Mock
+    private lateinit var pkceService: PkceService
+    
+    @Mock
+    private lateinit var auditService: AuditService
+
+    private lateinit var authorizationService: AuthorizationService
+
+    private val testClient = OAuth2Client(
+        id = 1L,
+        clientId = "test-client",
+        clientSecretHash = null,
+        clientName = "Test Client",
+        confidential = false,
+        redirectUris = "http://localhost:3000/callback,https://example.com/callback",
+        allowedScopes = "openid profile email",
+        allowedGrantTypes = "authorization_code refresh_token",
+        requirePkce = true
+    )
+
+    @BeforeEach
+    fun setUp() {
+        authorizationService = AuthorizationService(
+            clientRepository = clientRepository,
+            codeRepository = codeRepository,
+            pkceService = pkceService,
+            auditService = auditService
+        )
+    }
+
+    @Nested
+    @DisplayName("validateAuthorizationRequest")
+    inner class ValidateAuthorizationRequest {
+
+        @Test
+        @DisplayName("should accept valid authorization request with PKCE")
+        fun shouldAcceptValidRequest() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid profile",
+                state = "abc123",
+                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                codeChallengeMethod = "S256"
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            // Should not throw
+            val validatedClient = authorizationService.validateAuthorizationRequest(request)
+            
+            assertThat(validatedClient.clientId).isEqualTo("test-client")
+        }
+
+        @Test
+        @DisplayName("should reject request with unsupported response_type")
+        fun shouldRejectUnsupportedResponseType() {
+            val request = AuthorizationRequest(
+                responseType = "token", // implicit flow - not supported
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("unsupported_response_type")
+        }
+
+        @Test
+        @DisplayName("should reject request with unknown client_id")
+        fun shouldRejectUnknownClient() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "unknown-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(clientRepository.findByClientId("unknown-client"))
+                .thenReturn(Optional.empty())
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_client")
+        }
+
+        @Test
+        @DisplayName("should reject request with mismatched redirect_uri")
+        fun shouldRejectMismatchedRedirectUri() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://evil.com/callback" // not registered
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("redirect_uri")
+        }
+
+        @Test
+        @DisplayName("should reject request with invalid scope")
+        fun shouldRejectInvalidScope() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid admin" // 'admin' not allowed
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_scope")
+        }
+
+        @Test
+        @DisplayName("should reject request missing PKCE when required")
+        fun shouldRejectMissingPkce() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                codeChallenge = null // missing PKCE
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("PKCE")
+        }
+
+        @Test
+        @DisplayName("should reject disabled client")
+        fun shouldRejectDisabledClient() {
+            val disabledClient = testClient.copy(enabled = false)
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(disabledClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_client")
+        }
+    }
+
+    @Nested
+    @DisplayName("createAuthorizationCode")
+    inner class CreateAuthorizationCode {
+
+        @Test
+        @DisplayName("should create authorization code with all parameters")
+        fun shouldCreateCodeWithAllParameters() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid profile",
+                state = "abc123",
+                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                codeChallengeMethod = "S256",
+                nonce = "nonce123"
+            )
+            
+            whenever(codeRepository.save(any<AuthorizationCode>()))
+                .thenAnswer { it.arguments[0] as AuthorizationCode }
+            
+            val code = authorizationService.createAuthorizationCode(
+                client = testClient,
+                request = request,
+                userId = 42L,
+                username = "testuser"
+            )
+            
+            assertThat(code.code).isNotBlank()
+            assertThat(code.code.length).isGreaterThanOrEqualTo(32)
+            assertThat(code.clientId).isEqualTo("test-client")
+            assertThat(code.userId).isEqualTo(42L)
+            assertThat(code.username).isEqualTo("testuser")
+            assertThat(code.redirectUri).isEqualTo("http://localhost:3000/callback")
+            assertThat(code.scope).isEqualTo("openid profile")
+            assertThat(code.codeChallenge).isEqualTo("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+            assertThat(code.codeChallengeMethod).isEqualTo("S256")
+            assertThat(code.nonce).isEqualTo("nonce123")
+            assertThat(code.used).isFalse()
+            
+            verify(codeRepository).save(any())
+            verify(auditService).log(
+                action = eq("OAUTH2_CODE_ISSUED"),
+                username = eq("testuser"),
+                resourceType = eq("OAUTH2_CLIENT"),
+                resourceId = eq("test-client"),
+                ipAddress = anyOrNull(),
+                details = anyOrNull(),
+                success = eq(true)
+            )
+        }
+
+        @Test
+        @DisplayName("should generate unique codes")
+        fun shouldGenerateUniqueCodes() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(codeRepository.save(any<AuthorizationCode>()))
+                .thenAnswer { it.arguments[0] as AuthorizationCode }
+            
+            val codes = (1..100).map {
+                authorizationService.createAuthorizationCode(
+                    client = testClient,
+                    request = request,
+                    userId = 1L,
+                    username = "user"
+                ).code
+            }.toSet()
+            
+            assertThat(codes).hasSize(100)
+        }
+    }
+
+    @Nested
+    @DisplayName("buildAuthorizationRedirect")
+    inner class BuildAuthorizationRedirect {
+
+        @Test
+        @DisplayName("should build redirect URI with code and state")
+        fun shouldBuildRedirectWithCodeAndState() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                code = "auth-code-123",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).isEqualTo(
+                "http://localhost:3000/callback?code=auth-code-123&state=state-abc"
+            )
+        }
+
+        @Test
+        @DisplayName("should build redirect URI without state when not provided")
+        fun shouldBuildRedirectWithoutState() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                code = "auth-code-123",
+                state = null
+            )
+            
+            assertThat(redirectUri).isEqualTo(
+                "http://localhost:3000/callback?code=auth-code-123"
+            )
+        }
+
+        @Test
+        @DisplayName("should preserve existing query parameters")
+        fun shouldPreserveExistingQueryParams() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback?existing=param",
+                code = "auth-code-123",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).contains("existing=param")
+            assertThat(redirectUri).contains("code=auth-code-123")
+            assertThat(redirectUri).contains("state=state-abc")
+        }
+    }
+
+    @Nested
+    @DisplayName("buildErrorRedirect")
+    inner class BuildErrorRedirect {
+
+        @Test
+        @DisplayName("should build error redirect with all parameters")
+        fun shouldBuildErrorRedirect() {
+            val redirectUri = authorizationService.buildErrorRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                error = "access_denied",
+                errorDescription = "User denied consent",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).contains("error=access_denied")
+            assertThat(redirectUri).contains("error_description=User")
+            assertThat(redirectUri).contains("state=state-abc")
+        }
+    }
+}
+</file>
+
+<file path="backend/.gitignore">
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### Kotlin ###
+.kotlin
+.env
+</file>
+
+<file path="frontend/src/components/auth/LoginForm.tsx">
+// frontend/src/components/auth/LoginForm.tsx
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { SocialLogin } from './SocialLogin';
+
+interface LoginFormProps {
+  onSubmit: (username: string, password: string) => Promise<void>;
+  onSwitchToRegister: () => void;
+}
+
+export function LoginForm({ onSubmit, onSwitchToRegister }: LoginFormProps) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setIsLoading(true);
+
+    try {
+      await onSubmit(username, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold text-gray-900">Welcome Back</h1>
+        <p className="mt-2 text-gray-600">Sign in to your account</p>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <Input
+          label="Username"
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          required
+          autoComplete="username"
+          placeholder="Enter your username"
+        />
+
+        <Input
+          label="Password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          autoComplete="current-password"
+          placeholder="Enter your password"
+        />
+      </div>
+
+      <Button type="submit" isLoading={isLoading}>
+        Sign In
+      </Button>
+
+      {/* OAuth2 Social Login */}
+      <div className="mt-6">
+        <SocialLogin />
+      </div>
+
+      <p className="text-center text-sm text-gray-600">
+        Don't have an account?{' '}
+        <button
+          type="button"
+          onClick={onSwitchToRegister}
+          className="text-blue-600 hover:text-blue-800 font-medium"
+        >
+          Register here
+        </button>
+      </p>
+    </form>
+  );
+}
+</file>
+
+<file path="frontend/src/pages/LoginPage.tsx">
+// frontend/src/pages/LoginPage.tsx
+import { useState, useEffect } from 'react';
+import { LoginForm } from '../components/auth/LoginForm';
+import { RegisterForm } from '../components/auth/RegisterForm';
+import { useAuth } from '../hooks/useAuth';
+
+interface LoginPageProps {
+  onSuccess: () => void;
+  oauthError?: string | null;
+  onClearError?: () => void;
+}
+
+export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProps) {
+  const [isLogin, setIsLogin] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { login, register } = useAuth();
+
+  // Show OAuth2 error if present
+  useEffect(() => {
+    if (oauthError) {
+      setError(oauthError);
+      // Auto-clear after 5 seconds
+      const timer = setTimeout(() => {
+        setError(null);
+        onClearError?.();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [oauthError, onClearError]);
+
+  const handleLogin = async (username: string, password: string) => {
+    await login({ username, password });
+    onSuccess();
+  };
+
+  const handleRegister = async (username: string, email: string, password: string) => {
+    await register({ username, email, password });
+    onSuccess();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center px-4 py-12">
+      <div className="w-full max-w-md mx-auto">
+        {/* OAuth2 Error Banner */}
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+              <div className="ml-auto pl-3">
+                <button
+                  onClick={() => {
+                    setError(null);
+                    onClearError?.();
+                  }}
+                  className="text-red-400 hover:text-red-600"
+                >
+                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
+          {isLogin ? (
+            <LoginForm
+              onSubmit={handleLogin}
+              onSwitchToRegister={() => setIsLogin(false)}
+            />
+          ) : (
+            <RegisterForm
+              onSubmit={handleRegister}
+              onSwitchToLogin={() => setIsLogin(true)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/types/index.ts">
 // frontend/src/types/index.ts
 export interface User {
@@ -7143,6 +7342,86 @@ export interface UserResponse {
   createdAt: string;
   lastLogin: string | null;
 }
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+import { useState, useEffect } from 'react';
+import { LoginPage } from './pages/LoginPage';
+import { DashboardPage } from './pages/DashboardPage';
+import { authService } from './services/api';
+
+function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [oauthError, setOauthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Check for OAuth2 callback
+    const handleOAuth2Callback = () => {
+      const path = window.location.pathname;
+      const params = new URLSearchParams(window.location.search);
+      
+      // Handle OAuth2 callback from backend
+      if (path === '/oauth2/callback') {
+        const token = params.get('token');
+        const error = params.get('error');
+        
+        if (error) {
+          setOauthError(`OAuth2 login failed: ${error}`);
+          // Clear URL and show login page
+          window.history.replaceState({}, '', '/');
+          setIsLoading(false);
+          return;
+        }
+        
+        if (token) {
+          // Store token
+          localStorage.setItem('token', token);
+          // Clear URL and redirect to dashboard
+          window.history.replaceState({}, '', '/');
+          setIsAuthenticated(true);
+          setIsLoading(false);
+          return;
+        }
+      }
+      
+      // Normal auth check
+      setIsAuthenticated(authService.isAuthenticated());
+      setIsLoading(false);
+    };
+    
+    handleOAuth2Callback();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <svg className="animate-spin h-10 w-10 text-blue-600 mx-auto mb-4" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <p className="text-gray-500">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginPage 
+        onSuccess={() => setIsAuthenticated(true)} 
+        oauthError={oauthError}
+        onClearError={() => setOauthError(null)}
+      />
+    );
+  }
+
+  return <DashboardPage onLogout={() => setIsAuthenticated(false)} />;
+}
+
+export default App;
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/controller/AdminController.kt">
@@ -7418,76 +7697,6 @@ class BackendApplication
 
 fun main(args: Array<String>) {
     runApplication<BackendApplication>(*args)
-}
-</file>
-
-<file path="backend/build.gradle.kts">
-// backend/build.gradle.kts
-plugins {
-	kotlin("jvm") version "1.9.25"
-	kotlin("plugin.spring") version "1.9.25"
-	id("org.springframework.boot") version "3.5.0"
-	id("io.spring.dependency-management") version "1.1.7"
-	kotlin("plugin.jpa") version "1.9.25"
-}
-
-group = "com.securemonitor"
-version = "0.0.1-SNAPSHOT"
-description = "Demo project for Spring Boot"
-
-java {
-	toolchain {
-		languageVersion = JavaLanguageVersion.of(21)
-	}
-}
-
-repositories {
-	mavenCentral()
-}
-
-dependencies {
-	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
-	implementation("org.springframework.boot:spring-boot-starter-security")
-	implementation("org.springframework.boot:spring-boot-starter-validation")
-	implementation("org.springframework.boot:spring-boot-starter-web")
-	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-	implementation("org.jetbrains.kotlin:kotlin-reflect")
-
-	runtimeOnly("org.postgresql:postgresql")
-	testImplementation("org.springframework.boot:spring-boot-starter-test")
-	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
-	testImplementation("org.springframework.security:spring-security-test")
-	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-	// Mockito Kotlin extensions for testing
-	testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
-
-	// JWT 
-	implementation("io.jsonwebtoken:jjwt-api:0.12.5")
-	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.5")
-	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.5")
-
-	implementation("org.springframework.boot:spring-boot-starter-webflux")
-
-	implementation("me.paulschwarz:spring-dotenv:4.0.0")
-
-	// OAuth2 Client (for OIDC Consumer functionality)
-   	implementation("org.springframework.boot:spring-boot-starter-oauth2-client")
-}
-
-kotlin {
-	compilerOptions {
-		freeCompilerArgs.addAll("-Xjsr305=strict")
-	}
-}
-
-allOpen {
-	annotation("jakarta.persistence.Entity")
-	annotation("jakarta.persistence.MappedSuperclass")
-	annotation("jakarta.persistence.Embeddable")
-}
-
-tasks.withType<Test> {
-	useJUnitPlatform()
 }
 </file>
 
@@ -7888,6 +8097,76 @@ Daniel-Aston Brandsgård Parker
 ## 📄 License
 
 MIT
+</file>
+
+<file path="backend/build.gradle.kts">
+// backend/build.gradle.kts
+plugins {
+	kotlin("jvm") version "1.9.25"
+	kotlin("plugin.spring") version "1.9.25"
+	id("org.springframework.boot") version "3.5.0"
+	id("io.spring.dependency-management") version "1.1.7"
+	kotlin("plugin.jpa") version "1.9.25"
+}
+
+group = "com.securemonitor"
+version = "0.0.1-SNAPSHOT"
+description = "Demo project for Spring Boot"
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+	implementation("org.springframework.boot:spring-boot-starter-security")
+	implementation("org.springframework.boot:spring-boot-starter-validation")
+	implementation("org.springframework.boot:spring-boot-starter-web")
+	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+	implementation("org.jetbrains.kotlin:kotlin-reflect")
+
+	runtimeOnly("org.postgresql:postgresql")
+	testImplementation("org.springframework.boot:spring-boot-starter-test")
+	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+	testImplementation("org.springframework.security:spring-security-test")
+	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+	// Mockito Kotlin extensions for testing
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
+
+	// JWT 
+	implementation("io.jsonwebtoken:jjwt-api:0.12.5")
+	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.5")
+	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.5")
+
+	implementation("org.springframework.boot:spring-boot-starter-webflux")
+
+	implementation("me.paulschwarz:spring-dotenv:4.0.0")
+
+	// OAuth2 Client (for OIDC Consumer functionality)
+   	implementation("org.springframework.boot:spring-boot-starter-oauth2-client")
+}
+
+kotlin {
+	compilerOptions {
+		freeCompilerArgs.addAll("-Xjsr305=strict")
+	}
+}
+
+allOpen {
+	annotation("jakarta.persistence.Entity")
+	annotation("jakarta.persistence.MappedSuperclass")
+	annotation("jakarta.persistence.Embeddable")
+}
+
+tasks.withType<Test> {
+	useJUnitPlatform()
+}
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/config/SecurityConfig.kt">
