@@ -1,359 +1,331 @@
-# CIAM Demo
+# AI Security Monitor
 
-A comprehensive Customer Identity and Access Management (CIAM) demonstration project built for the IAM Developer position at Gjensidige. This project showcases secure authentication, authorization, and modern CIAM patterns using enterprise-grade technologies.
+A comprehensive IAM (Identity and Access Management) portfolio project demonstrating enterprise-grade security features including JWT authentication, OAuth 2.0/OIDC Provider, Multi-Factor Authentication (MFA/TOTP), role-based access control, and AI-powered security assistance.
 
-## Project Purpose
+## 🌐 Live Demo
 
-This demo was built to demonstrate practical understanding of CIAM concepts relevant to the insurance industry, including:
+- **Frontend:** https://ai-security-monitor.vercel.app
+- **Backend API:** https://ai-security-monitor-production.up.railway.app
 
-- Customer authentication with MFA
-- Delegated access (fullmakt) for family members
-- Role-based access control (RBAC) for business customers
-- Step-up authentication for sensitive operations
-- GDPR compliance features
+## ✨ Features
 
-## Architecture
+### Authentication & Authorization
+- **JWT Authentication** - Secure token-based auth with BCrypt password hashing
+- **Multi-Factor Authentication (MFA)** - TOTP-based 2FA with backup codes (RFC 6238)
+- **OAuth 2.0/OIDC Provider** - Built from scratch with PKCE support (RFC 7636)
+- **Role-Based Access Control (RBAC)** - USER and ADMIN roles
+- **Google OAuth2 Login** - Federated identity support
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CIAM Demo                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────┐        ┌─────────────┐                       │
-│   │   Web App   │        │ Mobile App  │                       │
-│   │  (Browser)  │        │ (Expo Go)   │                       │
-│   └──────┬──────┘        └──────┬──────┘                       │
-│          │                      │                               │
-│          └──────────┬───────────┘                               │
-│                     │                                           │
-│          ┌──────────▼──────────┐                               │
-│          │  Customer Type      │                               │
-│          │  [Privat] [Bedrift] │                               │
-│          └──────────┬──────────┘                               │
-│                     ▼                                           │
-│          ┌─────────────────────┐                               │
-│          │       Auth0         │                               │
-│          │  + MFA (TOTP)       │                               │
-│          └──────────┬──────────┘                               │
-│                     ▼                                           │
-│          ┌─────────────────────┐                               │
-│          │  Azure App Service  │                               │
-│          │  (Spring Boot API)  │                               │
-│          │  JWT Validation     │                               │
-│          └─────────────────────┘                               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Security Features
+- **Comprehensive Audit Logging** - All security events tracked with timestamps and IP addresses
+- **PKCE (S256)** - Proof Key for Code Exchange for public clients
+- **Timing-Safe Comparisons** - Protection against timing attacks
+- **Backup Codes** - SHA-256 hashed recovery codes for MFA
 
-## Features Demonstrated
+### Additional Features
+- **AI Security Assistant** - Security-focused chat powered by Groq LLM
+- **Admin Panel** - User management and role assignment
+- **Responsive Design** - Mobile-first UI with Tailwind CSS
 
-### Authentication and Security
-
-| Feature | Description | Status |
-|---------|-------------|--------|
-| OAuth 2.0 + PKCE | Secure authorization flow | ✅ Implemented |
-| OpenID Connect | Identity layer on OAuth 2.0 | ✅ Implemented |
-| MFA (TOTP) | Google Authenticator integration | ✅ Implemented |
-| JWT Validation | Backend token verification | ✅ Implemented |
-| Step-up Authentication | Extra verification for sensitive actions | ✅ Demo |
-
-### Customer Types
-
-The application supports two customer types, mirroring Gjensidige's actual customer segmentation:
-
-| Type | Features |
-|------|----------|
-| Private Customer (Privat) | Personal insurances, family delegations |
-| Business Customer (Bedrift) | Business insurances, RBAC roles |
-
-### Delegated Access (Fullmakt)
-
-| Feature | Description |
-|---------|-------------|
-| Give delegation | Grant access to family members or accountants |
-| Receive delegation | View and manage others' insurances |
-| Profile switching | Switch between delegated profiles |
-| Revoke access | Remove delegations at any time |
-
-### Role-Based Access Control (RBAC) for Business Customers
-
-| Role | Property Insurance | Personal Insurance | Pension |
-|------|-------------------|-------------------|---------|
-| CEO (Daglig leder) | ✅ | ✅ | ✅ |
-| HR Manager | ❌ | ✅ | ✅ |
-| Accountant (Regnskapsfører) | ✅ | ❌ | ❌ |
-| CFO (Økonomisjef) | ✅ | ❌ | ✅ |
-
-### GDPR Compliance
-
-| Feature | Description |
-|---------|-------------|
-| Consent Management | Granular consent for cookies, analytics, marketing |
-| Right to Access | Download all personal data (Article 15) |
-| Right to Erasure | Delete account and data (Article 17) |
-| Consent Modification | Update preferences at any time |
-
-## Technologies
-
-### Backend
-- **Kotlin** with Spring Boot 3.4
-- **Spring Security** OAuth2 Resource Server
-- **Java 21** runtime
-
-### Frontend
-- **React Native / Expo** for cross-platform mobile
-- **React Context API** for state management
-- **Custom Hooks** for reusable logic
-- **PropTypes** for runtime type checking
-- **Design System** with centralized theme
-
-### Authentication
-- **Auth0** (Identity-as-a-Service)
-- **OAuth 2.0 with PKCE** for secure mobile auth
-- **MFA/TOTP** (Google Authenticator)
-
-### Cloud and DevOps
-- **Azure App Service** for hosting
-- **GitHub Actions** for CI/CD
-- **Docker** containerization
-- **Kubernetes** manifests included
-
-## Frontend Architecture
-
-The frontend follows modern React patterns with clear separation of concerns:
+## 🏗️ Architecture
 
 ```
-frontend/src/
-│
-├── contexts/                    # Global state management
-│   ├── AuthContext.js          # OAuth/Auth0 authentication state
-│   ├── UserContext.js          # User profiles, customer type, delegations
-│   └── ConsentContext.js       # GDPR consent state
-│
-├── hooks/                       # Reusable logic
-│   ├── useApiTest.js           # API call logic with loading/error states
-│   ├── useCountdown.js         # Timer logic for OTP expiration
-│   └── index.js                # Barrel export
-│
-├── components/                  # Reusable UI components (with PropTypes)
-│   ├── ScreenContainer.js      # SafeArea wrapper with responsive layout
-│   ├── DetailRow.js            # Label-value display component
-│   ├── PermissionBadge.js      # RBAC permission indicator
-│   ├── InfoBox.js              # Informational boxes with variants
-│   ├── ApiResultBox.js         # API test result display
-│   ├── Card.js                 # Base card component
-│   ├── Button.js               # Themed button component
-│   ├── InsuranceCard.js        # Insurance display card
-│   ├── BottomNav.js            # Responsive bottom navigation
-│   ├── StepUpModal.js          # Step-up authentication modal
-│   ├── ProfileSwitcher.js      # Profile/delegation switcher
-│   └── index.js                # Barrel export
-│
-├── screens/                     # Screen components (with PropTypes)
-│   ├── LoginScreen.js          # Pre-auth with customer type selection
-│   ├── ConsentScreen.js        # GDPR consent collection
-│   ├── HomeScreen.js           # Main dashboard
-│   ├── ProfileScreen.js        # User profile with GDPR actions
-│   ├── DelegationScreen.js     # Delegation management + step-up demo
-│   ├── ApiTestScreen.js        # API testing interface
-│   ├── SecurityInfoScreen.js   # Security concepts education
-│   └── index.js                # Barrel export
-│
-├── services/                    # Business logic
-│   ├── api.js                  # API client
-│   ├── profile.js              # User profile generation
-│   ├── insurance.js            # Insurance data
-│   ├── delegation.js           # Delegation logic
-│   ├── business.js             # RBAC and company profiles
-│   └── userData.js             # Data aggregator
-│
-├── constants/                   # Configuration
-│   ├── config.js               # Auth0, API (with env var support)
-│   └── mockData.js             # Demo data constants
-│
-└── styles/                      # Design system
-    └── theme.js                # Colors, spacing, typography, shadows
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND (Vercel)                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │  LoginForm  │  │  MfaSetup   │  │  MfaVerify  │  │  Dashboard  │        │
+│  │  + MFA Flow │  │  (QR Code)  │  │  (TOTP/Backup)│ │  + Admin   │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
+│                              React + TypeScript + Tailwind                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼ HTTPS/JWT
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            BACKEND (Railway)                                 │
+│                         Kotlin + Spring Boot 3.5                            │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                        Security Layer                                 │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │  │
+│  │  │ JWT Filter  │  │ CORS Config │  │ BCrypt      │                  │  │
+│  │  │ + MFA Check │  │             │  │ Encoder     │                  │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐   │
+│  │   Auth Module      │  │   MFA Module       │  │  OAuth2 Provider   │   │
+│  │  ┌──────────────┐  │  │  ┌──────────────┐  │  │  ┌──────────────┐  │   │
+│  │  │ AuthService  │  │  │  │ TotpService  │  │  │  │ /authorize   │  │   │
+│  │  │ - login      │  │  │  │ - RFC 6238   │  │  │  │ /token       │  │   │
+│  │  │ - register   │  │  │  │ - 33 tests   │  │  │  │ /userinfo    │  │   │
+│  │  │ - MFA check  │  │  │  ├──────────────┤  │  │  │ /.well-known │  │   │
+│  │  ├──────────────┤  │  │  │ MfaService   │  │  │  ├──────────────┤  │   │
+│  │  │ JwtService   │  │  │  │ - setup      │  │  │  │ PkceService  │  │   │
+│  │  │ - tokens     │  │  │  │ - verify     │  │  │  │ - S256       │  │   │
+│  │  │ - MFA pending│  │  │  │ - backup     │  │  │  │ - plain      │  │   │
+│  │  └──────────────┘  │  │  └──────────────┘  │  │  └──────────────┘  │   │
+│  └────────────────────┘  └────────────────────┘  └────────────────────┘   │
+│                                                                              │
+│  ┌────────────────────┐  ┌────────────────────┐                            │
+│  │   Audit Module     │  │   AI Module        │                            │
+│  │  - All events      │  │  - Groq LLM        │                            │
+│  │  - IP tracking     │  │  - Security chat   │                            │
+│  └────────────────────┘  └────────────────────┘                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          PostgreSQL (Railway)                                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐           │
+│  │  users   │  │  roles   │  │ audit_log│  │ oauth2_clients   │           │
+│  │  + MFA   │  │          │  │          │  │ authorization_   │           │
+│  │  fields  │  │          │  │          │  │ codes            │           │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘           │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Design Principles Applied
-
-| Principle | Implementation |
-|-----------|----------------|
-| **Separation of Concerns** | Contexts for state, hooks for logic, components for UI |
-| **DRY (Don't Repeat Yourself)** | Shared components like DetailRow, PermissionBadge |
-| **Type Safety** | PropTypes for runtime validation |
-| **Mobile-first Design** | SafeAreaInsets, touch-friendly targets |
-| **Responsive Layout** | Platform detection, breakpoints for web |
-| **Design System** | Centralized theme with COLORS, SPACING, SHADOWS |
-| **Barrel Exports** | Clean imports via index.js files |
-| **Environment Config** | Configurable via .env with secure defaults |
-
-### State Management
+## 🔐 MFA (Multi-Factor Authentication) Flow
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    App Providers                        │
-├─────────────────────────────────────────────────────────┤
-│  SafeAreaProvider                                       │
-│    └── AuthProvider (user, tokens, login/logout)        │
-│          └── ConsentProvider (GDPR consents)            │
-│                └── UserProvider (profiles, delegations) │
-│                      └── App Content                    │
-└─────────────────────────────────────────────────────────┘
+┌─────────┐         ┌─────────┐         ┌─────────┐         ┌─────────┐
+│  User   │         │Frontend │         │ Backend │         │  Auth   │
+│         │         │         │         │         │         │  App    │
+└────┬────┘         └────┬────┘         └────┬────┘         └────┬────┘
+     │                   │                   │                   │
+     │  1. Enable MFA    │                   │                   │
+     │──────────────────▶│                   │                   │
+     │                   │  POST /mfa/setup  │                   │
+     │                   │──────────────────▶│                   │
+     │                   │                   │                   │
+     │                   │  {secret, qrUri}  │                   │
+     │                   │◀──────────────────│                   │
+     │                   │                   │                   │
+     │  2. Show QR Code  │                   │                   │
+     │◀──────────────────│                   │                   │
+     │                   │                   │                   │
+     │  3. Scan QR       │                   │                   │
+     │───────────────────────────────────────────────────────────▶
+     │                   │                   │                   │
+     │  4. Enter Code    │                   │                   │
+     │──────────────────▶│                   │                   │
+     │                   │ POST /mfa/verify  │                   │
+     │                   │──────────────────▶│                   │
+     │                   │                   │                   │
+     │                   │ {backupCodes[10]} │                   │
+     │                   │◀──────────────────│                   │
+     │                   │                   │                   │
+     │  5. Save Backup   │                   │                   │
+     │◀──────────────────│                   │                   │
+     │                   │                   │                   │
 ```
 
-## Project Structure
+## 🔑 OAuth 2.0/OIDC Provider
 
-```
-ciam-demo/
-├── backend-kotlin/
-│   ├── src/main/kotlin/no/gjensidige/ciam/
-│   │   ├── CiamDemoApplication.kt
-│   │   ├── ApiController.kt
-│   │   └── SecurityConfig.kt
-│   ├── Dockerfile
-│   └── build.gradle.kts
-│
-├── frontend/
-│   ├── .env.example             # Environment variables template
-│   ├── app.config.js            # Expo config with env support
-│   ├── App.js                   # App entry with providers
-│   ├── src/
-│   │   ├── contexts/            # State management
-│   │   ├── hooks/               # Custom hooks
-│   │   ├── components/          # Reusable UI
-│   │   ├── screens/             # Screen components
-│   │   ├── services/            # API and data
-│   │   ├── constants/           # Configuration
-│   │   └── styles/              # Design system
-│   └── package.json
-│
-├── kubernetes/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   └── secrets-template.yaml
-│
-└── .github/workflows/
-    └── main_ciam-demo-dap.yml
-```
+This project includes a **custom-built OAuth 2.0/OIDC Provider** (not using Keycloak or other libraries) to demonstrate deep protocol understanding.
 
-## Application Flow
+### Supported Features
+- Authorization Code Flow with PKCE (RFC 7636)
+- OpenID Connect Discovery (`/.well-known/openid-configuration`)
+- JWKS Endpoint (`/.well-known/jwks.json`)
+- UserInfo Endpoint (`/oauth2/userinfo`)
+- ID Tokens with standard claims
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ Login Screen │ ──▶ │    Auth0     │ ──▶ │   Consent    │
-│ (Type Select)│     │  (MFA/TOTP)  │     │   Screen     │
-└──────────────┘     └──────────────┘     └──────┬───────┘
-                                                  │
-                     ┌────────────────────────────┘
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Main Application                     │
-├─────────┬─────────┬─────────┬───────────┬──────────────┤
-│  Home   │Fullmakt │   API   │ Sikkerhet │   Profil     │
-│Dashboard│  Demo   │  Test   │   Info    │  (GDPR)      │
-└─────────┴─────────┴─────────┴───────────┴──────────────┘
+### Endpoints
+| Endpoint | Description |
+|----------|-------------|
+| `GET /oauth2/authorize` | Authorization endpoint |
+| `POST /oauth2/token` | Token exchange |
+| `GET /oauth2/userinfo` | User information |
+| `GET /.well-known/openid-configuration` | OIDC Discovery |
+| `GET /.well-known/jwks.json` | JSON Web Key Set |
+
+### Example Flow
+```bash
+# 1. Generate PKCE verifier and challenge
+CODE_VERIFIER=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-43)
+CODE_CHALLENGE=$(echo -n $CODE_VERIFIER | openssl sha256 -binary | base64 | tr -d '=' | tr '+/' '-_')
+
+# 2. Authorize (browser redirect)
+https://api.example.com/oauth2/authorize?
+  response_type=code&
+  client_id=my-client&
+  redirect_uri=http://localhost:3000/callback&
+  scope=openid%20profile%20email&
+  code_challenge=$CODE_CHALLENGE&
+  code_challenge_method=S256&
+  state=random-state
+
+# 3. Exchange code for tokens
+curl -X POST https://api.example.com/oauth2/token \
+  -d "grant_type=authorization_code" \
+  -d "code=AUTH_CODE" \
+  -d "redirect_uri=http://localhost:3000/callback" \
+  -d "client_id=my-client" \
+  -d "code_verifier=$CODE_VERIFIER"
 ```
 
-## Security Concepts Demonstrated
+## 🛠️ Tech Stack
 
-| Concept | Implementation |
-|---------|----------------|
-| OAuth 2.0 + PKCE | Auth0 integration with secure code exchange |
-| JWT Tokens | Backend validation with RS256 signature verification |
-| MFA/TOTP | Google Authenticator required for every login |
-| Step-up Authentication | Additional OTP verification for sensitive operations |
-| RBAC | Role-based permissions for business customers |
-| Delegated Access | Acting on behalf of family members |
-| SSO | Explained in security education screen |
-| BankID | Explained as Norwegian eID solution |
-| GDPR | Consent management, data export, account deletion |
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 18, TypeScript, Tailwind CSS, Vite |
+| Backend | Kotlin, Spring Boot 3.5, Spring Security |
+| Database | PostgreSQL 16 |
+| Auth | JWT (jjwt), BCrypt, TOTP (RFC 6238) |
+| OAuth | Custom OIDC Provider with PKCE |
+| AI | Groq API (Llama 3.1) |
+| Deploy | Vercel (frontend), Railway (backend + DB) |
+| CI/CD | GitHub Actions |
+| Infra | Kubernetes manifests, Helm charts |
 
-## Gjensidige-Relevant Features
-
-This demo mirrors real CIAM patterns used by Gjensidige:
-
-| Gjensidige Feature | Demo Implementation |
-|--------------------|---------------------|
-| Privat / Bedrift login separation | Customer type selection before login |
-| BankID for step-up | Simulated with OTP verification |
-| Fullmakt for family | Delegation management screen |
-| Role-based business access | RBAC with 4 predefined roles |
-| Profile switching in app | ProfileSwitcher component |
-
-## API Endpoints
-
-| Endpoint | Authentication | Description |
-|----------|----------------|-------------|
-| GET / | None | Returns API documentation |
-| GET /public | None | Returns public greeting |
-| GET /protected | JWT required | Returns user info from token claims |
-
-**Live API:** https://ciam-demo-dap-cdbcc5debgfgbaf5.westeurope-01.azurewebsites.net
-
-## Getting Started
+## 🚀 Local Development
 
 ### Prerequisites
-- Node.js 20+ (required)
-- Java 21 (for backend development)
-- Expo Go app on mobile device
-- Auth0 account (optional - defaults work for demo)
+- Docker and Docker Compose
+- Node.js 20+
+- Java 21+
 
-### Environment Variables (Optional)
-
-The frontend uses environment variables for configuration. Default values are provided for demo purposes, so this step is optional.
+### Quick Start
 
 ```bash
-cd frontend
+# Clone repository
+git clone https://github.com/yourusername/ai-security-monitor.git
+cd ai-security-monitor
 
-# Copy the example file
-cp .env.example .env
+# Start database
+docker-compose up -d
 
-# Edit with your own values (optional)
-nano .env
-```
+# Backend (terminal 1)
+cd backend
+./gradlew bootRun
 
-Available variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AUTH0_DOMAIN` | Auth0 tenant domain | Demo tenant |
-| `AUTH0_CLIENT_ID` | Auth0 application client ID | Demo client |
-| `AUTH0_AUDIENCE` | Auth0 API audience | `https://ciam-demo-api` |
-| `API_BASE_URL` | Backend API URL | Azure deployment |
-
-### Run Frontend
-```bash
+# Frontend (terminal 2)
 cd frontend
 npm install
-npx expo start --tunnel
+npm run dev
 ```
 
-Scan the QR code with Expo Go (Android) or Camera app (iOS).
+### Environment Variables
 
-### Run Backend Locally
+**Backend (`backend/src/main/resources/application.yml`):**
+```yaml
+PGHOST: localhost
+PGPORT: 5432
+PGDATABASE: securemonitor
+PGUSER: securemonitor
+PGPASSWORD: localdev123
+JWT_SECRET: your-256-bit-secret
+GROQ_API_KEY: your-groq-api-key
+GOOGLE_CLIENT_ID: your-google-client-id
+GOOGLE_CLIENT_SECRET: your-google-client-secret
+```
+
+**Frontend (`.env`):**
+```
+VITE_API_URL=http://localhost:8080
+```
+
+## 🧪 Testing
+
 ```bash
-cd backend-kotlin
-./gradlew bootRun
+# Run all backend tests
+cd backend
+./gradlew test
+
+# Run specific test class
+./gradlew test --tests "TotpServiceTest"
+
+# Test coverage report
+./gradlew jacocoTestReport
 ```
 
-## Production Considerations
+### Test Coverage Highlights
+- **TotpService:** 33 tests covering RFC 6238 compliance
+- **PkceService:** PKCE S256 and plain method tests
+- **OAuth2 flows:** Authorization code exchange tests
 
-For a production implementation, the following enhancements would be recommended:
+## 📁 Project Structure
 
-| Area | Enhancement |
-|------|-------------|
-| Authentication | BankID integration for Norwegian users |
-| Data Persistence | Backend database for delegations and consents |
-| Security | Audit logging, rate limiting, DDoS protection |
-| Tokens | Refresh token rotation |
-| Monitoring | Application insights, error tracking |
+```
+ai-security-monitor/
+├── backend/
+│   └── src/main/kotlin/com/securemonitor/
+│       ├── config/          # Security, CORS configuration
+│       ├── controller/      # REST endpoints
+│       ├── dto/             # Data transfer objects
+│       ├── mfa/             # MFA module (TOTP, backup codes)
+│       │   ├── controller/
+│       │   ├── dto/
+│       │   └── service/
+│       ├── model/           # JPA entities
+│       ├── oauth2/          # OAuth 2.0/OIDC Provider
+│       │   ├── controller/
+│       │   ├── dto/
+│       │   ├── model/
+│       │   ├── repository/
+│       │   └── service/
+│       ├── repository/      # Data access
+│       ├── security/        # JWT, filters
+│       └── service/         # Business logic
+├── frontend/
+│   └── src/
+│       ├── components/
+│       │   ├── auth/        # Login, Register, MFA components
+│       │   ├── admin/       # Admin panel
+│       │   ├── chat/        # AI chat
+│       │   └── ui/          # Reusable UI components
+│       ├── pages/           # Page components
+│       ├── services/        # API services
+│       └── types/           # TypeScript types
+├── infrastructure/
+│   ├── kubernetes/          # K8s manifests
+│   └── helm/                # Helm charts
+└── docker-compose.yml
+```
 
-## Author
+## 🎯 Interview Talking Points
 
-Daniel Parker  
-Bachelor in Computer Science, University of Oslo
+### For DFØ (IAM Advisor Role)
 
-## License
+**OAuth 2.0/OIDC Expertise:**
+- Built OAuth 2.0 Provider from scratch (not using Keycloak) to demonstrate deep protocol understanding
+- Implemented PKCE with S256 method for public client security
+- Full OIDC compliance with Discovery and JWKS endpoints
 
-This project is for demonstration purposes.
+**Security Best Practices:**
+- Timing-safe comparisons to prevent timing attacks
+- SHA-256 hashed backup codes
+- Comprehensive audit logging of all security events
+- Short-lived authorization codes (10 minutes)
+- Single-use codes to prevent replay attacks
+
+**MFA Implementation:**
+- RFC 6238 compliant TOTP with 33 unit tests
+- Clock drift tolerance (±30 seconds)
+- Backup codes for account recovery
+
+### For Cyberforsvaret (Open Source Developer)
+
+**Kotlin Proficiency:**
+- Clean, idiomatic Kotlin with Spring Boot
+- Data classes, extension functions, null safety
+- Coroutines-ready architecture
+
+**Full-Stack Development:**
+- React + TypeScript frontend
+- RESTful API design
+- PostgreSQL with JPA/Hibernate
+
+**DevOps & Infrastructure:**
+- Docker containerization
+- Kubernetes manifests + Helm charts
+- GitHub Actions CI/CD
+- Railway + Vercel deployment
+
+## 📜 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
