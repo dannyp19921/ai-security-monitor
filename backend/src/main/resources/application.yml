@@ -20,6 +20,27 @@ spring:
 server:
   port: ${PORT:8080}
 
+# JWT Configuration
+jwt:
+  secret: ${JWT_SECRET:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}
+  expiration: 86400000 # 24 hours in milliseconds
+
+# OAuth 2.0 / OIDC Configuration
+oauth2:
+  issuer: ${OAUTH2_ISSUER:http://localhost:8080}
+  access-token-lifetime: 3600      # 1 hour
+  refresh-token-lifetime: 2592000  # 30 days
+  authorization-code-lifetime: 600 # 10 minutes
+  require-pkce: true
+
+# Groq AI Configuration
 groq:
   api-key: ${GROQ_API_KEY:}
   model: llama-3.1-8b-instant
+
+# Logging
+logging:
+  level:
+    com.securemonitor: DEBUG
+    com.securemonitor.oauth2: DEBUG
+    org.springframework.security: INFO

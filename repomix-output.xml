@@ -1,0 +1,3308 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.github/
+  workflows/
+    ci.yml
+backend/
+  gradle/
+    wrapper/
+      gradle-wrapper.jar
+      gradle-wrapper.properties
+  src/
+    main/
+      kotlin/
+        com/
+          securemonitor/
+            config/
+              SecurityConfig.kt
+            controller/
+              AdminController.kt
+              AiController.kt
+              AuditController.kt
+              AuthController.kt
+              HealthController.kt
+            dto/
+              AuthDtos.kt
+            model/
+              AuditLog.kt
+              Role.kt
+              User.kt
+            repository/
+              AuditLogRepository.kt
+              RoleRepository.kt
+              UserRepository.kt
+            security/
+              JwtAuthenticationFilter.kt
+              JwtService.kt
+            service/
+              AiService.kt
+              AuditService.kt
+              AuthService.kt
+            BackendApplication.kt
+      resources/
+        application.yml
+    test/
+      kotlin/
+        com/
+          securemonitor/
+            BackendApplicationTests.kt
+  .gitattributes
+  .gitignore
+  build.gradle.kts
+  Dockerfile
+  gradlew
+  gradlew.bat
+  settings.gradle.kts
+docker/
+  docker-compose.yml
+frontend/
+  public/
+    vite.svg
+  src/
+    assets/
+      react.svg
+    components/
+      admin/
+        AdminPanel.tsx
+      auth/
+        LoginForm.tsx
+        RegisterForm.tsx
+      chat/
+        AiChat.tsx
+      ui/
+        Button.tsx
+        Input.tsx
+    hooks/
+      useAuth.ts
+    pages/
+      DashboardPage.tsx
+      LoginPage.tsx
+    services/
+      api.ts
+    types/
+      index.ts
+    App.css
+    App.tsx
+    index.css
+    main.tsx
+  .gitignore
+  eslint.config.js
+  index.html
+  package.json
+  README.md
+  tsconfig.app.json
+  tsconfig.json
+  tsconfig.node.json
+  vite.config.ts
+.gitignore
+docker-compose.yml
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/gradle/wrapper/gradle-wrapper.properties">
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/controller/AiController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/AiController.kt
+package com.securemonitor.controller
+
+import com.securemonitor.dto.ChatRequest
+import com.securemonitor.dto.ChatResponse
+import com.securemonitor.service.AiService
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/ai")
+class AiController(
+    private val aiService: AiService
+) {
+
+    @PostMapping("/chat")
+    fun chat(@RequestBody request: ChatRequest): ResponseEntity<ChatResponse> {
+        val username = SecurityContextHolder.getContext().authentication?.name ?: "anonymous"
+        val response = aiService.chat(request.message, username)
+
+        return ResponseEntity.ok(ChatResponse(response = response))
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/controller/AuditController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/AuditController.kt
+package com.securemonitor.controller
+
+import com.securemonitor.model.AuditLog
+import com.securemonitor.service.AuditService
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/audit")
+class AuditController(
+    private val auditService: AuditService
+) {
+
+    @GetMapping("/logs")
+    fun getRecentLogs(): ResponseEntity<List<AuditLog>> {
+        return ResponseEntity.ok(auditService.getRecentLogs())
+    }
+
+    @GetMapping("/logs/user/{username}")
+    fun getLogsByUsername(@PathVariable username: String): ResponseEntity<List<AuditLog>> {
+        return ResponseEntity.ok(auditService.getLogsByUsername(username))
+    }
+
+    @GetMapping("/logs/action/{action}")
+    fun getLogsByAction(@PathVariable action: String): ResponseEntity<List<AuditLog>> {
+        return ResponseEntity.ok(auditService.getLogsByAction(action))
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/controller/HealthController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/HealthController.kt
+package com.securemonitor.controller
+
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
+import java.time.Instant
+
+@RestController
+@RequestMapping("/api")
+class HealthController {
+
+    @GetMapping("/health")
+    fun health(): Map<String, Any> {
+        return mapOf(
+            "status" to "UP",
+            "service" to "ai-security-monitor",
+            "timestamp" to Instant.now().toString()
+        )
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/model/AuditLog.kt">
+// backend/src/main/kotlin/com/securemonitor/model/AuditLog.kt
+package com.securemonitor.model
+
+import jakarta.persistence.*
+import java.time.Instant
+
+@Entity
+@Table(name = "audit_logs")
+data class AuditLog(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(nullable = false)
+    val timestamp: Instant = Instant.now(),
+
+    @Column(nullable = false)
+    val action: String,
+
+    @Column(nullable = false)
+    val username: String,
+
+    @Column
+    val resourceType: String? = null,
+
+    @Column
+    val resourceId: String? = null,
+
+    @Column
+    val ipAddress: String? = null,
+
+    @Column(length = 1000)
+    val details: String? = null,
+
+    @Column(nullable = false)
+    val success: Boolean = true
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/model/Role.kt">
+// backend/src/main/kotlin/com/securemonitor/model/Role.kt
+package com.securemonitor.model
+
+import jakarta.persistence.*
+
+@Entity
+@Table(name = "roles")
+data class Role(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(unique = true, nullable = false)
+    val name: String,
+
+    @Column
+    val description: String? = null
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/repository/AuditLogRepository.kt">
+// backend/src/main/kotlin/com/securemonitor/repository/AuditLogRepository.kt
+package com.securemonitor.repository
+
+import com.securemonitor.model.AuditLog
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.stereotype.Repository
+import java.time.Instant
+
+@Repository
+interface AuditLogRepository : JpaRepository<AuditLog, Long> {
+    fun findByUsernameOrderByTimestampDesc(username: String): List<AuditLog>
+    fun findByActionOrderByTimestampDesc(action: String): List<AuditLog>
+    fun findByTimestampBetweenOrderByTimestampDesc(start: Instant, end: Instant): List<AuditLog>
+    fun findTop100ByOrderByTimestampDesc(): List<AuditLog>
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/repository/RoleRepository.kt">
+// backend/src/main/kotlin/com/securemonitor/repository/RoleRepository.kt
+package com.securemonitor.repository
+
+import com.securemonitor.model.Role
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.stereotype.Repository
+import java.util.Optional
+
+@Repository
+interface RoleRepository : JpaRepository<Role, Long> {
+    fun findByName(name: String): Optional<Role>
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/repository/UserRepository.kt">
+// backend/src/main/kotlin/com/securemonitor/repository/UserRepository.kt 
+package com.securemonitor.repository
+
+import com.securemonitor.model.User
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.stereotype.Repository
+import java.util.Optional
+
+@Repository
+interface UserRepository : JpaRepository<User, Long> {
+    fun findByUsername(username: String): Optional<User>
+    fun findByEmail(email: String): Optional<User>
+    fun existsByUsername(username: String): Boolean
+    fun existsByEmail(email: String): Boolean
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/security/JwtAuthenticationFilter.kt">
+// backend/src/main/kotlin/com/securemonitor/security/JwtAuthenticationFilter.kt 
+package com.securemonitor.security
+
+import jakarta.servlet.FilterChain
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+import org.springframework.security.core.authority.SimpleGrantedAuthority
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.stereotype.Component
+import org.springframework.web.filter.OncePerRequestFilter
+
+@Component
+class JwtAuthenticationFilter(
+    private val jwtService: JwtService
+) : OncePerRequestFilter() {
+
+    override fun doFilterInternal(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain
+    ) {
+        val authHeader = request.getHeader("Authorization")
+
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            val token = authHeader.substring(7)
+
+            if (jwtService.validateToken(token)) {
+                val username = jwtService.getUsername(token)
+                val roles = jwtService.getRoles(token)
+
+                val authorities = roles.map { SimpleGrantedAuthority("ROLE_$it") }
+
+                val authentication = UsernamePasswordAuthenticationToken(
+                    username,
+                    null,
+                    authorities
+                )
+
+                SecurityContextHolder.getContext().authentication = authentication
+            }
+        }
+
+        filterChain.doFilter(request, response)
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/security/JwtService.kt">
+// backend/src/main/kotlin/com/securemonitor/security/JwtService.kt
+package com.securemonitor.security
+
+import io.jsonwebtoken.Claims
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.security.Keys
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.stereotype.Service
+import java.util.*
+import javax.crypto.SecretKey
+
+@Service
+class JwtService {
+
+    @Value("\${jwt.secret:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}")
+    private lateinit var secretString: String
+
+    @Value("\${jwt.expiration:86400000}")
+    private var expiration: Long = 86400000 // 24 hours
+
+    private val secretKey: SecretKey by lazy {
+        Keys.hmacShaKeyFor(secretString.toByteArray())
+    }
+
+    fun generateToken(username: String, roles: List<String>): String {
+        val now = Date()
+        val expiryDate = Date(now.time + expiration)
+
+        return Jwts.builder()
+            .subject(username)
+            .claim("roles", roles)
+            .issuedAt(now)
+            .expiration(expiryDate)
+            .signWith(secretKey)
+            .compact()
+    }
+
+    fun validateToken(token: String): Boolean {
+        return try {
+            getClaims(token)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun getUsername(token: String): String {
+        return getClaims(token).subject
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun getRoles(token: String): List<String> {
+        return getClaims(token)["roles"] as? List<String> ?: emptyList()
+    }
+
+    private fun getClaims(token: String): Claims {
+        return Jwts.parser()
+            .verifyWith(secretKey)
+            .build()
+            .parseSignedClaims(token)
+            .payload
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/service/AiService.kt">
+// backend/src/main/kotlin/com/securemonitor/service/AiService.kt
+package com.securemonitor.service
+
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.stereotype.Service
+import org.springframework.web.reactive.function.client.WebClient
+import org.springframework.http.MediaType
+
+@Service
+class AiService(
+    private val auditService: AuditService
+) {
+
+    @Value("\${groq.api-key:}")
+    private lateinit var apiKey: String
+
+    @Value("\${groq.model:llama-3.1-8b-instant}")
+    private lateinit var model: String
+
+    private val webClient = WebClient.builder()
+        .baseUrl("https://api.groq.com/openai/v1")
+        .build()
+
+    fun chat(prompt: String, username: String): String {
+        if (apiKey.isBlank()) {
+            return "AI service is not configured. Please set GROQ_API_KEY."
+        }
+
+        val systemPrompt = """
+            You are a security analyst AI assistant for the AI Security Monitor system.
+            You help users understand security events, audit logs, and provide guidance
+            on security best practices. Keep responses concise and actionable.
+            Focus on IAM (Identity and Access Management) topics when relevant.
+        """.trimIndent()
+
+        val requestBody = mapOf(
+            "model" to model,
+            "messages" to listOf(
+                mapOf("role" to "system", "content" to systemPrompt),
+                mapOf("role" to "user", "content" to prompt)
+            ),
+            "max_tokens" to 1024,
+            "temperature" to 0.7
+        )
+
+        return try {
+            val response = webClient.post()
+                .uri("/chat/completions")
+                .header("Authorization", "Bearer $apiKey")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(requestBody)
+                .retrieve()
+                .bodyToMono(Map::class.java)
+                .block()
+
+            @Suppress("UNCHECKED_CAST")
+            val choices = response?.get("choices") as? List<Map<String, Any>>
+            val message = choices?.firstOrNull()?.get("message") as? Map<String, Any>
+            val content = message?.get("content") as? String ?: "No response from AI"
+
+            auditService.log(
+                action = "AI_CHAT",
+                username = username,
+                resourceType = "AI",
+                details = "Prompt: ${prompt.take(100)}..."
+            )
+
+            content
+        } catch (e: Exception) {
+            auditService.log(
+                action = "AI_CHAT_FAILED",
+                username = username,
+                resourceType = "AI",
+                details = "Error: ${e.message}",
+                success = false
+            )
+            "Error communicating with AI service: ${e.message}"
+        }
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/service/AuditService.kt">
+// backend/src/main/kotlin/com/securemonitor/service/AuditService.kt
+package com.securemonitor.service
+
+import com.securemonitor.model.AuditLog
+import com.securemonitor.repository.AuditLogRepository
+import org.springframework.stereotype.Service
+import java.time.Instant
+
+@Service
+class AuditService(
+    private val auditLogRepository: AuditLogRepository
+) {
+
+    fun log(
+        action: String,
+        username: String,
+        resourceType: String? = null,
+        resourceId: String? = null,
+        ipAddress: String? = null,
+        details: String? = null,
+        success: Boolean = true
+    ): AuditLog {
+        val auditLog = AuditLog(
+            action = action,
+            username = username,
+            resourceType = resourceType,
+            resourceId = resourceId,
+            ipAddress = ipAddress,
+            details = details,
+            success = success
+        )
+        return auditLogRepository.save(auditLog)
+    }
+
+    fun getRecentLogs(): List<AuditLog> {
+        return auditLogRepository.findTop100ByOrderByTimestampDesc()
+    }
+
+    fun getLogsByUsername(username: String): List<AuditLog> {
+        return auditLogRepository.findByUsernameOrderByTimestampDesc(username)
+    }
+
+    fun getLogsByAction(action: String): List<AuditLog> {
+        return auditLogRepository.findByActionOrderByTimestampDesc(action)
+    }
+
+    fun getLogsByTimeRange(start: Instant, end: Instant): List<AuditLog> {
+        return auditLogRepository.findByTimestampBetweenOrderByTimestampDesc(start, end)
+    }
+}
+</file>
+
+<file path="backend/src/test/kotlin/com/securemonitor/BackendApplicationTests.kt">
+package com.securemonitor
+
+import org.junit.jupiter.api.Test
+import org.springframework.boot.test.context.SpringBootTest
+
+@SpringBootTest
+class BackendApplicationTests {
+
+	@Test
+	fun contextLoads() {
+	}
+
+}
+</file>
+
+<file path="backend/.gitattributes">
+/gradlew text eol=lf
+*.bat text eol=crlf
+*.jar binary
+</file>
+
+<file path="backend/.gitignore">
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### Kotlin ###
+.kotlin
+</file>
+
+<file path="backend/Dockerfile">
+# backend/Dockerfile
+
+# Build stage
+FROM gradle:8.14-jdk21 AS build
+WORKDIR /app
+COPY . .
+RUN gradle build -x test --no-daemon
+
+# Runtime stage
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+
+# Create non-root user for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy the built jar
+COPY --from=build /app/build/libs/backend-0.0.1-SNAPSHOT.jar app.jar
+
+# Set ownership
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+# Expose port
+EXPOSE 8080
+
+# Run the application
+ENTRYPOINT ["java", "-jar", "app.jar"]
+</file>
+
+<file path="backend/gradlew">
+#!/bin/sh
+
+#
+# Copyright © 2015-2021 the original authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+##############################################################################
+#
+#   Gradle start up script for POSIX generated by Gradle.
+#
+#   Important for running:
+#
+#   (1) You need a POSIX-compliant shell to run this script. If your /bin/sh is
+#       noncompliant, but you have some other compliant shell such as ksh or
+#       bash, then to run this script, type that shell name before the whole
+#       command line, like:
+#
+#           ksh Gradle
+#
+#       Busybox and similar reduced shells will NOT work, because this script
+#       requires all of these POSIX shell features:
+#         * functions;
+#         * expansions «$var», «${var}», «${var:-default}», «${var+SET}»,
+#           «${var#prefix}», «${var%suffix}», and «$( cmd )»;
+#         * compound commands having a testable exit status, especially «case»;
+#         * various built-in commands including «command», «set», and «ulimit».
+#
+#   Important for patching:
+#
+#   (2) This script targets any POSIX shell, so it avoids extensions provided
+#       by Bash, Ksh, etc; in particular arrays are avoided.
+#
+#       The "traditional" practice of packing multiple parameters into a
+#       space-separated string is a well documented source of bugs and security
+#       problems, so this is (mostly) avoided, by progressively accumulating
+#       options in "$@", and eventually passing that to Java.
+#
+#       Where the inherited environment variables (DEFAULT_JVM_OPTS, JAVA_OPTS,
+#       and GRADLE_OPTS) rely on word-splitting, this is performed explicitly;
+#       see the in-line comments for details.
+#
+#       There are tweaks for specific operating systems such as AIX, CygWin,
+#       Darwin, MinGW, and NonStop.
+#
+#   (3) This script is generated from the Groovy template
+#       https://github.com/gradle/gradle/blob/HEAD/platforms/jvm/plugins-application/src/main/resources/org/gradle/api/internal/plugins/unixStartScript.txt
+#       within the Gradle project.
+#
+#       You can find Gradle at https://github.com/gradle/gradle/.
+#
+##############################################################################
+
+# Attempt to set APP_HOME
+
+# Resolve links: $0 may be a link
+app_path=$0
+
+# Need this for daisy-chained symlinks.
+while
+    APP_HOME=${app_path%"${app_path##*/}"}  # leaves a trailing /; empty if no leading path
+    [ -h "$app_path" ]
+do
+    ls=$( ls -ld "$app_path" )
+    link=${ls#*' -> '}
+    case $link in             #(
+      /*)   app_path=$link ;; #(
+      *)    app_path=$APP_HOME$link ;;
+    esac
+done
+
+# This is normally unused
+# shellcheck disable=SC2034
+APP_BASE_NAME=${0##*/}
+# Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
+APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
+
+# Use the maximum available, or set MAX_FD != -1 to use that value.
+MAX_FD=maximum
+
+warn () {
+    echo "$*"
+} >&2
+
+die () {
+    echo
+    echo "$*"
+    echo
+    exit 1
+} >&2
+
+# OS specific support (must be 'true' or 'false').
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "$( uname )" in                #(
+  CYGWIN* )         cygwin=true  ;; #(
+  Darwin* )         darwin=true  ;; #(
+  MSYS* | MINGW* )  msys=true    ;; #(
+  NONSTOP* )        nonstop=true ;;
+esac
+
+CLASSPATH="\\\"\\\""
+
+
+# Determine the Java command to use to start the JVM.
+if [ -n "$JAVA_HOME" ] ; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD=$JAVA_HOME/jre/sh/java
+    else
+        JAVACMD=$JAVA_HOME/bin/java
+    fi
+    if [ ! -x "$JAVACMD" ] ; then
+        die "ERROR: JAVA_HOME is set to an invalid directory: $JAVA_HOME
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+else
+    JAVACMD=java
+    if ! command -v java >/dev/null 2>&1
+    then
+        die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+fi
+
+# Increase the maximum file descriptors if we can.
+if ! "$cygwin" && ! "$darwin" && ! "$nonstop" ; then
+    case $MAX_FD in #(
+      max*)
+        # In POSIX sh, ulimit -H is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        MAX_FD=$( ulimit -H -n ) ||
+            warn "Could not query maximum file descriptor limit"
+    esac
+    case $MAX_FD in  #(
+      '' | soft) :;; #(
+      *)
+        # In POSIX sh, ulimit -n is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        ulimit -n "$MAX_FD" ||
+            warn "Could not set maximum file descriptor limit to $MAX_FD"
+    esac
+fi
+
+# Collect all arguments for the java command, stacking in reverse order:
+#   * args from the command line
+#   * the main class name
+#   * -classpath
+#   * -D...appname settings
+#   * --module-path (only if needed)
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, and GRADLE_OPTS environment variables.
+
+# For Cygwin or MSYS, switch paths to Windows format before running java
+if "$cygwin" || "$msys" ; then
+    APP_HOME=$( cygpath --path --mixed "$APP_HOME" )
+    CLASSPATH=$( cygpath --path --mixed "$CLASSPATH" )
+
+    JAVACMD=$( cygpath --unix "$JAVACMD" )
+
+    # Now convert the arguments - kludge to limit ourselves to /bin/sh
+    for arg do
+        if
+            case $arg in                                #(
+              -*)   false ;;                            # don't mess with options #(
+              /?*)  t=${arg#/} t=/${t%%/*}              # looks like a POSIX filepath
+                    [ -e "$t" ] ;;                      #(
+              *)    false ;;
+            esac
+        then
+            arg=$( cygpath --path --ignore --mixed "$arg" )
+        fi
+        # Roll the args list around exactly as many times as the number of
+        # args, so each arg winds up back in the position where it started, but
+        # possibly modified.
+        #
+        # NB: a `for` loop captures its iteration list before it begins, so
+        # changing the positional parameters here affects neither the number of
+        # iterations, nor the values presented in `arg`.
+        shift                   # remove old arg
+        set -- "$@" "$arg"      # push replacement arg
+    done
+fi
+
+
+# Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+
+# Collect all arguments for the java command:
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,
+#     and any embedded shellness will be escaped.
+#   * For example: A user cannot expect ${Hostname} to be expanded, as it is an environment variable and will be
+#     treated as '${Hostname}' itself on the command line.
+
+set -- \
+        "-Dorg.gradle.appname=$APP_BASE_NAME" \
+        -classpath "$CLASSPATH" \
+        -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" \
+        "$@"
+
+# Stop when "xargs" is not available.
+if ! command -v xargs >/dev/null 2>&1
+then
+    die "xargs is not available"
+fi
+
+# Use "xargs" to parse quoted args.
+#
+# With -n1 it outputs one arg per line, with the quotes and backslashes removed.
+#
+# In Bash we could simply go:
+#
+#   readarray ARGS < <( xargs -n1 <<<"$var" ) &&
+#   set -- "${ARGS[@]}" "$@"
+#
+# but POSIX shell has neither arrays nor command substitution, so instead we
+# post-process each arg (as a line of input to sed) to backslash-escape any
+# character that might be a shell metacharacter, then use eval to reverse
+# that process (while maintaining the separation between arguments), and wrap
+# the whole thing up as a single "set" statement.
+#
+# This will of course break if any of these variables contains a newline or
+# an unmatched quote.
+#
+
+eval "set -- $(
+        printf '%s\n' "$DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS" |
+        xargs -n1 |
+        sed ' s~[^-[:alnum:]+,./:=@_]~\\&~g; ' |
+        tr '\n' ' '
+    )" '"$@"'
+
+exec "$JAVACMD" "$@"
+</file>
+
+<file path="backend/gradlew.bat">
+@rem
+@rem Copyright 2015 the original author or authors.
+@rem
+@rem Licensed under the Apache License, Version 2.0 (the "License");
+@rem you may not use this file except in compliance with the License.
+@rem You may obtain a copy of the License at
+@rem
+@rem      https://www.apache.org/licenses/LICENSE-2.0
+@rem
+@rem Unless required by applicable law or agreed to in writing, software
+@rem distributed under the License is distributed on an "AS IS" BASIS,
+@rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+@rem See the License for the specific language governing permissions and
+@rem limitations under the License.
+@rem
+@rem SPDX-License-Identifier: Apache-2.0
+@rem
+
+@if "%DEBUG%"=="" @echo off
+@rem ##########################################################################
+@rem
+@rem  Gradle startup script for Windows
+@rem
+@rem ##########################################################################
+
+@rem Set local scope for the variables with windows NT shell
+if "%OS%"=="Windows_NT" setlocal
+
+set DIRNAME=%~dp0
+if "%DIRNAME%"=="" set DIRNAME=.
+@rem This is normally unused
+set APP_BASE_NAME=%~n0
+set APP_HOME=%DIRNAME%
+
+@rem Resolve any "." and ".." in APP_HOME to make it shorter.
+for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
+
+@rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
+
+@rem Find java.exe
+if defined JAVA_HOME goto findJavaFromJavaHome
+
+set JAVA_EXE=java.exe
+%JAVA_EXE% -version >NUL 2>&1
+if %ERRORLEVEL% equ 0 goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH. 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:findJavaFromJavaHome
+set JAVA_HOME=%JAVA_HOME:"=%
+set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+
+if exist "%JAVA_EXE%" goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME% 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:execute
+@rem Setup the command line
+
+set CLASSPATH=
+
+
+@rem Execute Gradle
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*
+
+:end
+@rem End local scope for the variables with windows NT shell
+if %ERRORLEVEL% equ 0 goto mainEnd
+
+:fail
+rem Set variable GRADLE_EXIT_CONSOLE if you need the _script_ return code instead of
+rem the _cmd.exe /c_ return code!
+set EXIT_CODE=%ERRORLEVEL%
+if %EXIT_CODE% equ 0 set EXIT_CODE=1
+if not ""=="%GRADLE_EXIT_CONSOLE%" exit %EXIT_CODE%
+exit /b %EXIT_CODE%
+
+:mainEnd
+if "%OS%"=="Windows_NT" endlocal
+
+:omega
+</file>
+
+<file path="backend/settings.gradle.kts">
+rootProject.name = "backend"
+</file>
+
+<file path="docker/docker-compose.yml">
+## docker/docker-compose.yml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: securemonitor-db
+    environment:
+      POSTGRES_DB: securemonitor
+      POSTGRES_USER: securemonitor
+      POSTGRES_PASSWORD: localdev123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securemonitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+</file>
+
+<file path="frontend/public/vite.svg">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>
+</file>
+
+<file path="frontend/src/assets/react.svg">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="35.93" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 228"><path fill="#00D8FF" d="M210.483 73.824a171.49 171.49 0 0 0-8.24-2.597c.465-1.9.893-3.777 1.273-5.621c6.238-30.281 2.16-54.676-11.769-62.708c-13.355-7.7-35.196.329-57.254 19.526a171.23 171.23 0 0 0-6.375 5.848a155.866 155.866 0 0 0-4.241-3.917C100.759 3.829 77.587-4.822 63.673 3.233C50.33 10.957 46.379 33.89 51.995 62.588a170.974 170.974 0 0 0 1.892 8.48c-3.28.932-6.445 1.924-9.474 2.98C17.309 83.498 0 98.307 0 113.668c0 15.865 18.582 31.778 46.812 41.427a145.52 145.52 0 0 0 6.921 2.165a167.467 167.467 0 0 0-2.01 9.138c-5.354 28.2-1.173 50.591 12.134 58.266c13.744 7.926 36.812-.22 59.273-19.855a145.567 145.567 0 0 0 5.342-4.923a168.064 168.064 0 0 0 6.92 6.314c21.758 18.722 43.246 26.282 56.54 18.586c13.731-7.949 18.194-32.003 12.4-61.268a145.016 145.016 0 0 0-1.535-6.842c1.62-.48 3.21-.974 4.76-1.488c29.348-9.723 48.443-25.443 48.443-41.52c0-15.417-17.868-30.326-45.517-39.844Zm-6.365 70.984c-1.4.463-2.836.91-4.3 1.345c-3.24-10.257-7.612-21.163-12.963-32.432c5.106-11 9.31-21.767 12.459-31.957c2.619.758 5.16 1.557 7.61 2.4c23.69 8.156 38.14 20.213 38.14 29.504c0 9.896-15.606 22.743-40.946 31.14Zm-10.514 20.834c2.562 12.94 2.927 24.64 1.23 33.787c-1.524 8.219-4.59 13.698-8.382 15.893c-8.067 4.67-25.32-1.4-43.927-17.412a156.726 156.726 0 0 1-6.437-5.87c7.214-7.889 14.423-17.06 21.459-27.246c12.376-1.098 24.068-2.894 34.671-5.345a134.17 134.17 0 0 1 1.386 6.193ZM87.276 214.515c-7.882 2.783-14.16 2.863-17.955.675c-8.075-4.657-11.432-22.636-6.853-46.752a156.923 156.923 0 0 1 1.869-8.499c10.486 2.32 22.093 3.988 34.498 4.994c7.084 9.967 14.501 19.128 21.976 27.15a134.668 134.668 0 0 1-4.877 4.492c-9.933 8.682-19.886 14.842-28.658 17.94ZM50.35 144.747c-12.483-4.267-22.792-9.812-29.858-15.863c-6.35-5.437-9.555-10.836-9.555-15.216c0-9.322 13.897-21.212 37.076-29.293c2.813-.98 5.757-1.905 8.812-2.773c3.204 10.42 7.406 21.315 12.477 32.332c-5.137 11.18-9.399 22.249-12.634 32.792a134.718 134.718 0 0 1-6.318-1.979Zm12.378-84.26c-4.811-24.587-1.616-43.134 6.425-47.789c8.564-4.958 27.502 2.111 47.463 19.835a144.318 144.318 0 0 1 3.841 3.545c-7.438 7.987-14.787 17.08-21.808 26.988c-12.04 1.116-23.565 2.908-34.161 5.309a160.342 160.342 0 0 1-1.76-7.887Zm110.427 27.268a347.8 347.8 0 0 0-7.785-12.803c8.168 1.033 15.994 2.404 23.343 4.08c-2.206 7.072-4.956 14.465-8.193 22.045a381.151 381.151 0 0 0-7.365-13.322Zm-45.032-43.861c5.044 5.465 10.096 11.566 15.065 18.186a322.04 322.04 0 0 0-30.257-.006c4.974-6.559 10.069-12.652 15.192-18.18ZM82.802 87.83a323.167 323.167 0 0 0-7.227 13.238c-3.184-7.553-5.909-14.98-8.134-22.152c7.304-1.634 15.093-2.97 23.209-3.984a321.524 321.524 0 0 0-7.848 12.897Zm8.081 65.352c-8.385-.936-16.291-2.203-23.593-3.793c2.26-7.3 5.045-14.885 8.298-22.6a321.187 321.187 0 0 0 7.257 13.246c2.594 4.48 5.28 8.868 8.038 13.147Zm37.542 31.03c-5.184-5.592-10.354-11.779-15.403-18.433c4.902.192 9.899.29 14.978.29c5.218 0 10.376-.117 15.453-.343c-4.985 6.774-10.018 12.97-15.028 18.486Zm52.198-57.817c3.422 7.8 6.306 15.345 8.596 22.52c-7.422 1.694-15.436 3.058-23.88 4.071a382.417 382.417 0 0 0 7.859-13.026a347.403 347.403 0 0 0 7.425-13.565Zm-16.898 8.101a358.557 358.557 0 0 1-12.281 19.815a329.4 329.4 0 0 1-23.444.823c-7.967 0-15.716-.248-23.178-.732a310.202 310.202 0 0 1-12.513-19.846h.001a307.41 307.41 0 0 1-10.923-20.627a310.278 310.278 0 0 1 10.89-20.637l-.001.001a307.318 307.318 0 0 1 12.413-19.761c7.613-.576 15.42-.876 23.31-.876H128c7.926 0 15.743.303 23.354.883a329.357 329.357 0 0 1 12.335 19.695a358.489 358.489 0 0 1 11.036 20.54a329.472 329.472 0 0 1-11 20.722Zm22.56-122.124c8.572 4.944 11.906 24.881 6.52 51.026c-.344 1.668-.73 3.367-1.15 5.09c-10.622-2.452-22.155-4.275-34.23-5.408c-7.034-10.017-14.323-19.124-21.64-27.008a160.789 160.789 0 0 1 5.888-5.4c18.9-16.447 36.564-22.941 44.612-18.3ZM128 90.808c12.625 0 22.86 10.235 22.86 22.86s-10.235 22.86-22.86 22.86s-22.86-10.235-22.86-22.86s10.235-22.86 22.86-22.86Z"></path></svg>
+</file>
+
+<file path="frontend/src/components/admin/AdminPanel.tsx">
+// frontend/src/components/admin/AdminPanel.tsx 
+import { useState, useEffect } from 'react';
+import { adminService } from '../../services/api';
+import { Button } from '../ui/Button';
+import type { UserResponse } from '../../types';
+
+export function AdminPanel() {
+  const [users, setUsers] = useState<UserResponse[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const fetchUsers = async () => {
+    try {
+      const data = await adminService.getAllUsers();
+      setUsers(data);
+      setError('');
+    } catch (err) {
+      setError('Failed to load users. You may not have admin access.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const handleAddRole = async (userId: number, roleName: string) => {
+    try {
+      await adminService.addRoleToUser(userId, roleName);
+      fetchUsers();
+    } catch (err) {
+      setError('Failed to add role');
+    }
+  };
+
+  const handleRemoveRole = async (userId: number, roleName: string) => {
+    try {
+      await adminService.removeRoleFromUser(userId, roleName);
+      fetchUsers();
+    } catch (err) {
+      setError('Failed to remove role');
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  if (isLoading) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm p-6">
+        <div className="flex justify-center py-8">
+          <svg className="animate-spin h-8 w-8 text-blue-600" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white rounded-xl shadow-sm p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Admin Panel</h2>
+        <div className="p-4 bg-red-50 rounded-lg">
+          <p className="text-red-600">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm p-6">
+      <h2 className="text-lg font-semibold text-gray-900 mb-4">Admin Panel - User Management</h2>
+      
+      <div className="overflow-x-auto">
+        {/* Mobile View */}
+        <div className="sm:hidden space-y-4">
+          {users.map((user) => (
+            <div key={user.id} className="border rounded-lg p-4 space-y-3">
+              <div>
+                <p className="font-medium text-gray-900">{user.username}</p>
+                <p className="text-sm text-gray-500">{user.email}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {user.roles.map((role) => (
+                  <span
+                    key={role}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium"
+                  >
+                    {role}
+                    {role !== 'USER' && (
+                      <button
+                        onClick={() => handleRemoveRole(user.id, role)}
+                        className="text-blue-600 hover:text-red-600"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+              {!user.roles.includes('ADMIN') && (
+                <Button
+                  variant="secondary"
+                  onClick={() => handleAddRole(user.id, 'ADMIN')}
+                  className="!w-auto !py-1 text-sm"
+                >
+                  Make Admin
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Desktop View */}
+        <table className="hidden sm:table w-full">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">User</th>
+              <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Email</th>
+              <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Roles</th>
+              <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Created</th>
+              <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((user) => (
+              <tr key={user.id} className="border-b hover:bg-gray-50">
+                <td className="py-3 px-4 text-sm font-medium text-gray-900">{user.username}</td>
+                <td className="py-3 px-4 text-sm text-gray-600">{user.email}</td>
+                <td className="py-3 px-4">
+                  <div className="flex flex-wrap gap-1">
+                    {user.roles.map((role) => (
+                      <span
+                        key={role}
+                        className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium"
+                      >
+                        {role}
+                        {role !== 'USER' && (
+                          <button
+                            onClick={() => handleRemoveRole(user.id, role)}
+                            className="text-blue-600 hover:text-red-600"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+                <td className="py-3 px-4 text-sm text-gray-600">{formatDate(user.createdAt)}</td>
+                <td className="py-3 px-4">
+                  {!user.roles.includes('ADMIN') && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => handleAddRole(user.id, 'ADMIN')}
+                      className="!w-auto !py-1 text-sm"
+                    >
+                      Make Admin
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/auth/LoginForm.tsx">
+// frontend/src/components/auth/LoginForm.tsx
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+
+interface LoginFormProps {
+  onSubmit: (username: string, password: string) => Promise<void>;
+  onSwitchToRegister: () => void;
+}
+
+export function LoginForm({ onSubmit, onSwitchToRegister }: LoginFormProps) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setIsLoading(true);
+
+    try {
+      await onSubmit(username, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold text-gray-900">Welcome Back</h1>
+        <p className="mt-2 text-gray-600">Sign in to your account</p>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <Input
+          label="Username"
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          required
+          autoComplete="username"
+          placeholder="Enter your username"
+        />
+
+        <Input
+          label="Password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          autoComplete="current-password"
+          placeholder="Enter your password"
+        />
+      </div>
+
+      <Button type="submit" isLoading={isLoading}>
+        Sign In
+      </Button>
+
+      <p className="text-center text-sm text-gray-600">
+        Don't have an account?{' '}
+        <button
+          type="button"
+          onClick={onSwitchToRegister}
+          className="text-blue-600 hover:text-blue-800 font-medium"
+        >
+          Register here
+        </button>
+      </p>
+    </form>
+  );
+}
+</file>
+
+<file path="frontend/src/components/auth/RegisterForm.tsx">
+// frontend/src/components/auth/RegisterForm.tsx
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+
+interface RegisterFormProps {
+  onSubmit: (username: string, email: string, password: string) => Promise<void>;
+  onSwitchToLogin: () => void;
+}
+
+export function RegisterForm({ onSubmit, onSwitchToLogin }: RegisterFormProps) {
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      await onSubmit(username, email, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Registration failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold text-gray-900">Create Account</h1>
+        <p className="mt-2 text-gray-600">Register for a new account</p>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200" role="alert">
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        <Input
+          label="Username"
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          required
+          autoComplete="username"
+          placeholder="Choose a username"
+        />
+
+        <Input
+          label="Email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          autoComplete="email"
+          placeholder="Enter your email"
+        />
+
+        <Input
+          label="Password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          autoComplete="new-password"
+          placeholder="Choose a password (min. 8 characters)"
+        />
+
+        <Input
+          label="Confirm Password"
+          type="password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          required
+          autoComplete="new-password"
+          placeholder="Confirm your password"
+        />
+      </div>
+
+      <Button type="submit" isLoading={isLoading}>
+        Create Account
+      </Button>
+
+      <p className="text-center text-sm text-gray-600">
+        Already have an account?{' '}
+        <button
+          type="button"
+          onClick={onSwitchToLogin}
+          className="text-blue-600 hover:text-blue-800 font-medium"
+        >
+          Sign in here
+        </button>
+      </p>
+    </form>
+  );
+}
+</file>
+
+<file path="frontend/src/components/chat/AiChat.tsx">
+// frontend/src/components/chat/AiChat.tsx
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import { Button } from '../ui/Button';
+import { aiService } from '../../services/api';
+
+interface Message {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+export function AiChat() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userMessage: Message = {
+      id: Date.now(),
+      role: 'user',
+      content: input.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const response = await aiService.chat(userMessage.content);
+      const assistantMessage: Message = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: response.response,
+        timestamp: response.timestamp,
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (error) {
+      const errorMessage: Message = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: 'Sorry, I encountered an error. Please try again.',
+        timestamp: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm flex flex-col h-[500px]">
+      <div className="p-4 border-b">
+        <h2 className="text-lg font-semibold text-gray-900">AI Security Assistant</h2>
+        <p className="text-sm text-gray-500">Ask questions about security and IAM</p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.length === 0 ? (
+          <div className="text-center text-gray-500 mt-8">
+            <p>No messages yet.</p>
+            <p className="text-sm mt-2">Try asking about security best practices or audit logs.</p>
+          </div>
+        ) : (
+          messages.map(message => (
+            <div
+              key={message.id}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                  message.role === 'user'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-900'
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{message.content}</p>
+              </div>
+            </div>
+          ))
+        )}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-gray-100 rounded-lg px-4 py-2">
+              <div className="flex items-center gap-2">
+                <svg className="animate-spin h-4 w-4 text-gray-600" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-gray-600">Thinking...</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <form onSubmit={handleSubmit} className="p-4 border-t">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask a security question..."
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 min-h-[44px]"
+            disabled={isLoading}
+          />
+          <Button type="submit" isLoading={isLoading} className="!w-auto px-6">
+            Send
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/ui/Button.tsx">
+// frontend/src/components/ui/Button.tsx
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  children: ReactNode;
+  variant?: 'primary' | 'secondary' | 'danger';
+  isLoading?: boolean;
+}
+
+export function Button({ 
+  children, 
+  variant = 'primary', 
+  isLoading = false,
+  disabled,
+  className = '',
+  ...props 
+}: ButtonProps) {
+  const baseStyles = 'w-full px-4 py-3 rounded-lg font-medium transition-colors duration-200 min-h-[44px] disabled:opacity-50 disabled:cursor-not-allowed';
+  
+  const variants = {
+    primary: 'bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800',
+    secondary: 'bg-gray-200 text-gray-800 hover:bg-gray-300 active:bg-gray-400',
+    danger: 'bg-red-600 text-white hover:bg-red-700 active:bg-red-800',
+  };
+
+  return (
+    <button
+      className={`${baseStyles} ${variants[variant]} ${className}`}
+      disabled={disabled || isLoading}
+      {...props}
+    >
+      {isLoading ? (
+        <span className="flex items-center justify-center gap-2">
+          <svg className="animate-spin h-5 w-5\" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          Loading...
+        </span>
+      ) : children}
+    </button>
+  );
+}
+</file>
+
+<file path="frontend/src/components/ui/Input.tsx">
+// frontend/src/components/ui/Input.tsx
+import type { InputHTMLAttributes } from 'react';
+
+interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
+  label: string;
+  error?: string;
+}
+
+export function Input({ 
+  label, 
+  error, 
+  id,
+  className = '',
+  ...props 
+}: InputProps) {
+  const inputId = id || label.toLowerCase().replace(/\s+/g, '-');
+
+  return (
+    <div className="space-y-1">
+      <label 
+        htmlFor={inputId}
+        className="block text-sm font-medium text-gray-700"
+      >
+        {label}
+      </label>
+      <input
+        id={inputId}
+        className={`
+          w-full px-4 py-3 rounded-lg border transition-colors duration-200
+          min-h-[44px] text-base
+          ${error 
+            ? 'border-red-500 focus:ring-red-500 focus:border-red-500' 
+            : 'border-gray-300 focus:ring-blue-500 focus:border-blue-500'
+          }
+          focus:outline-none focus:ring-2
+          ${className}
+        `}
+        {...props}
+      />
+      {error && (
+        <p className="text-sm text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/hooks/useAuth.ts">
+// frontend/src/hooks/useAuth.ts 
+import { useState, useEffect, useCallback } from 'react';
+import type { AuthResponse, LoginRequest, RegisterRequest } from '../types';
+import { authService } from '../services/api';
+
+interface AuthState {
+  isAuthenticated: boolean;
+  username: string | null;
+  roles: string[];
+  isLoading: boolean;
+}
+
+export function useAuth() {
+  const [state, setState] = useState<AuthState>({
+    isAuthenticated: false,
+    username: null,
+    roles: [],
+    isLoading: true,
+  });
+
+  useEffect(() => {
+    const token = authService.getToken();
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        setState({
+          isAuthenticated: true,
+          username: payload.sub,
+          roles: payload.roles || [],
+          isLoading: false,
+        });
+      } catch {
+        authService.logout();
+        setState({
+          isAuthenticated: false,
+          username: null,
+          roles: [],
+          isLoading: false,
+        });
+      }
+    } else {
+      setState(prev => ({ ...prev, isLoading: false }));
+    }
+  }, []);
+
+  const login = useCallback(async (data: LoginRequest): Promise<AuthResponse> => {
+    const response = await authService.login(data);
+    setState({
+      isAuthenticated: true,
+      username: response.username,
+      roles: response.roles,
+      isLoading: false,
+    });
+    return response;
+  }, []);
+
+  const register = useCallback(async (data: RegisterRequest): Promise<AuthResponse> => {
+    const response = await authService.register(data);
+    setState({
+      isAuthenticated: true,
+      username: response.username,
+      roles: response.roles,
+      isLoading: false,
+    });
+    return response;
+  }, []);
+
+  const logout = useCallback(() => {
+    authService.logout();
+    setState({
+      isAuthenticated: false,
+      username: null,
+      roles: [],
+      isLoading: false,
+    });
+  }, []);
+
+  const hasRole = useCallback((role: string) => {
+    return state.roles.includes(role);
+  }, [state.roles]);
+
+  return {
+    ...state,
+    login,
+    register,
+    logout,
+    hasRole,
+  };
+}
+</file>
+
+<file path="frontend/src/pages/LoginPage.tsx">
+// frontend/src/pages/LoginPage.tsx
+import { useState } from 'react';
+import { LoginForm } from '../components/auth/LoginForm';
+import { RegisterForm } from '../components/auth/RegisterForm';
+import { useAuth } from '../hooks/useAuth';
+
+interface LoginPageProps {
+  onSuccess: () => void;
+}
+
+export function LoginPage({ onSuccess }: LoginPageProps) {
+  const [isLogin, setIsLogin] = useState(true);
+  const { login, register } = useAuth();
+
+  const handleLogin = async (username: string, password: string) => {
+    await login({ username, password });
+    onSuccess();
+  };
+
+  const handleRegister = async (username: string, email: string, password: string) => {
+    await register({ username, email, password });
+    onSuccess();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center px-4 py-12">
+      <div className="w-full max-w-md mx-auto">
+        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
+          {isLogin ? (
+            <LoginForm
+              onSubmit={handleLogin}
+              onSwitchToRegister={() => setIsLogin(false)}
+            />
+          ) : (
+            <RegisterForm
+              onSubmit={handleRegister}
+              onSwitchToLogin={() => setIsLogin(true)}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/App.css">
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+</file>
+
+<file path="frontend/src/App.tsx">
+// frontend/src/App.tsx
+import { useState, useEffect } from 'react';
+import { LoginPage } from './pages/LoginPage';
+import { DashboardPage } from './pages/DashboardPage';
+import { authService } from './services/api';
+
+function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    setIsAuthenticated(authService.isAuthenticated());
+    setIsLoading(false);
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <svg className="animate-spin h-10 w-10 text-blue-600" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage onSuccess={() => setIsAuthenticated(true)} />;
+  }
+
+  return <DashboardPage onLogout={() => setIsAuthenticated(false)} />;
+}
+
+export default App;
+</file>
+
+<file path="frontend/src/index.css">
+/* frontend/src/index.css */
+@import "tailwindcss";
+</file>
+
+<file path="frontend/src/main.tsx">
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.tsx'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+</file>
+
+<file path="frontend/.gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+</file>
+
+<file path="frontend/eslint.config.js">
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      js.configs.recommended,
+      tseslint.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+  },
+])
+</file>
+
+<file path="frontend/index.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "axios": "^1.13.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.12.0",
+    "tailwindcss": "^4.1.18"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.4"
+  }
+}
+</file>
+
+<file path="frontend/README.md">
+# React + TypeScript + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```
+
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```
+</file>
+
+<file path="frontend/tsconfig.app.json">
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "types": ["vite/client"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="frontend/tsconfig.json">
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}
+</file>
+
+<file path="frontend/tsconfig.node.json">
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+</file>
+
+<file path="frontend/vite.config.ts">
+// frontend/vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+})
+</file>
+
+<file path=".gitignore">
+# Dependencies
+node_modules/
+.gradle/
+build/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Build outputs
+dist/
+target/
+*.jar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+</file>
+
+<file path="docker-compose.yml">
+## (root-folder)/docker-compose.yml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:16-alpine
+    container_name: securemonitor-db
+    environment:
+      POSTGRES_DB: securemonitor
+      POSTGRES_USER: securemonitor
+      POSTGRES_PASSWORD: localdev123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: securemonitor-backend
+    depends_on:
+      - database
+    environment:
+      PGHOST: database
+      PGPORT: 5432
+      PGDATABASE: securemonitor
+      PGUSER: securemonitor
+      PGPASSWORD: localdev123
+      GROQ_API_KEY: ${GROQ_API_KEY}
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
+</file>
+
+<file path=".github/workflows/ci.yml">
+# .github/workflows/ci.yml
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build and test backend
+        working-directory: ./backend
+        run: ./gradlew build -x test
+
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: npm run build
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt
+package com.securemonitor.controller
+
+import com.securemonitor.dto.AuthResponse
+import com.securemonitor.dto.LoginRequest
+import com.securemonitor.dto.RegisterRequest
+import com.securemonitor.service.AuthService
+import com.securemonitor.security.JwtService
+import jakarta.servlet.http.HttpServletRequest
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/auth")
+class AuthController(
+    private val authService: AuthService,
+    private val jwtService: JwtService
+) {
+
+    @PostMapping("/register")
+    fun register(
+        @RequestBody request: RegisterRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<AuthResponse> {
+        val ipAddress = getClientIp(httpRequest)
+        val user = authService.register(request.username, request.email, request.password, ipAddress)
+        val roles = user.roles.map { it.name }
+        val token = jwtService.generateToken(user.username, roles)
+
+        return ResponseEntity.ok(AuthResponse(
+            token = token,
+            username = user.username,
+            roles = roles
+        ))
+    }
+
+    @PostMapping("/login")
+    fun login(
+        @RequestBody request: LoginRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<AuthResponse> {
+        val ipAddress = getClientIp(httpRequest)
+        val token = authService.login(request.username, request.password, ipAddress)
+        val username = jwtService.getUsername(token)
+        val roles = jwtService.getRoles(token)
+
+        return ResponseEntity.ok(AuthResponse(
+            token = token,
+            username = username,
+            roles = roles
+        ))
+    }
+
+    private fun getClientIp(request: HttpServletRequest): String {
+        val xForwardedFor = request.getHeader("X-Forwarded-For")
+        return if (xForwardedFor != null) {
+            xForwardedFor.split(",")[0].trim()
+        } else {
+            request.remoteAddr
+        }
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt">
+// backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt 
+package com.securemonitor.dto
+
+data class RegisterRequest(
+    val username: String,
+    val email: String,
+    val password: String
+)
+
+data class LoginRequest(
+    val username: String,
+    val password: String
+)
+
+data class AuthResponse(
+    val token: String,
+    val username: String,
+    val roles: List<String>
+)
+
+data class UserResponse(
+    val id: Long,
+    val username: String,
+    val email: String,
+    val roles: List<String>,
+    val enabled: Boolean,
+    val createdAt: String,
+    val lastLogin: String?
+)
+
+data class ChatRequest(
+    val message: String
+)
+
+data class ChatResponse(
+    val response: String,
+    val timestamp: String = java.time.Instant.now().toString()
+)
+</file>
+
+<file path="frontend/src/types/index.ts">
+// frontend/src/types/index.ts
+export interface User {
+  id: number;
+  username: string;
+  email: string;
+  roles: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastLogin: string | null;
+}
+
+export interface AuthResponse {
+  token: string;
+  username: string;
+  roles: string[];
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  email: string;
+  password: string;
+}
+
+export interface AuditLog {
+  id: number;
+  timestamp: string;
+  action: string;
+  username: string;
+  resourceType: string | null;
+  resourceId: string | null;
+  ipAddress: string | null;
+  details: string | null;
+  success: boolean;
+}
+
+export interface UserResponse {
+  id: number;
+  username: string;
+  email: string;
+  roles: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastLogin: string | null;
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/controller/AdminController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/AdminController.kt
+package com.securemonitor.controller
+
+import com.securemonitor.dto.UserResponse
+import com.securemonitor.model.User
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.repository.RoleRepository
+import com.securemonitor.service.AuditService
+import org.springframework.http.ResponseEntity
+import org.springframework.security.access.prepost.PreAuthorize
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/admin")
+@PreAuthorize("hasRole('ADMIN')")
+class AdminController(
+    private val userRepository: UserRepository,
+    private val roleRepository: RoleRepository,
+    private val auditService: AuditService
+) {
+
+    @GetMapping("/users")
+    fun getAllUsers(): ResponseEntity<List<UserResponse>> {
+        val users = userRepository.findAll().map { it.toResponse() }
+        
+        auditService.log(
+            action = "ADMIN_VIEW_USERS",
+            username = SecurityContextHolder.getContext().authentication?.name ?: "unknown",
+            resourceType = "USER",
+            details = "Listed ${users.size} users"
+        )
+        
+        return ResponseEntity.ok(users)
+    }
+
+    @PostMapping("/users/{userId}/roles/{roleName}")
+    fun addRoleToUser(
+        @PathVariable userId: Long,
+        @PathVariable roleName: String
+    ): ResponseEntity<UserResponse> {
+        val user = userRepository.findById(userId)
+            .orElseThrow { IllegalArgumentException("User not found") }
+        
+        val role = roleRepository.findByName(roleName)
+            .orElseThrow { IllegalArgumentException("Role not found") }
+        
+        user.roles.add(role)
+        val savedUser = userRepository.save(user)
+        
+        auditService.log(
+            action = "ADMIN_ADD_ROLE",
+            username = SecurityContextHolder.getContext().authentication?.name ?: "unknown",
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "Added role $roleName to user ${user.username}"
+        )
+        
+        return ResponseEntity.ok(savedUser.toResponse())
+    }
+
+    @DeleteMapping("/users/{userId}/roles/{roleName}")
+    fun removeRoleFromUser(
+        @PathVariable userId: Long,
+        @PathVariable roleName: String
+    ): ResponseEntity<UserResponse> {
+        val user = userRepository.findById(userId)
+            .orElseThrow { IllegalArgumentException("User not found") }
+        
+        val role = roleRepository.findByName(roleName)
+            .orElseThrow { IllegalArgumentException("Role not found") }
+        
+        user.roles.remove(role)
+        val savedUser = userRepository.save(user)
+        
+        auditService.log(
+            action = "ADMIN_REMOVE_ROLE",
+            username = SecurityContextHolder.getContext().authentication?.name ?: "unknown",
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "Removed role $roleName from user ${user.username}"
+        )
+        
+        return ResponseEntity.ok(savedUser.toResponse())
+    }
+
+    private fun User.toResponse() = UserResponse(
+        id = this.id,
+        username = this.username,
+        email = this.email,
+        roles = this.roles.map { it.name },
+        enabled = this.enabled,
+        createdAt = this.createdAt.toString(),
+        lastLogin = this.lastLogin?.toString()
+    )
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/model/User.kt">
+// backend/src/main/kotlin/com/securemonitor/model/User.kt
+package com.securemonitor.model
+
+import jakarta.persistence.*
+import java.time.Instant
+
+@Entity
+@Table(name = "users")
+data class User(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(unique = true, nullable = false)
+    val username: String,
+
+    @Column(unique = true, nullable = false)
+    val email: String,
+
+    @Column(nullable = false)
+    val passwordHash: String,
+
+    @ManyToMany(fetch = FetchType.EAGER)
+    @JoinTable(
+        name = "user_roles",
+        joinColumns = [JoinColumn(name = "user_id")],
+        inverseJoinColumns = [JoinColumn(name = "role_id")]
+    )
+    var roles: MutableSet<Role> = mutableSetOf(),
+
+    @Column(nullable = false)
+    val enabled: Boolean = true,
+
+    @Column(nullable = false)
+    val createdAt: Instant = Instant.now(),
+
+    @Column
+    val lastLogin: Instant? = null
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/service/AuthService.kt">
+// backend/src/main/kotlin/com/securemonitor/service/AuthService.kt
+package com.securemonitor.service
+
+import com.securemonitor.model.Role
+import com.securemonitor.model.User
+import com.securemonitor.repository.RoleRepository
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.security.JwtService
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.stereotype.Service
+import java.time.Instant
+
+@Service
+class AuthService(
+    private val userRepository: UserRepository,
+    private val roleRepository: RoleRepository,
+    private val passwordEncoder: PasswordEncoder,
+    private val jwtService: JwtService,
+    private val auditService: AuditService
+) {
+
+    fun register(username: String, email: String, password: String, ipAddress: String? = null): User {
+        if (userRepository.existsByUsername(username)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Username already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Username already exists")
+        }
+        if (userRepository.existsByEmail(email)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Email already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Email already exists")
+        }
+
+        val userRole = roleRepository.findByName("USER")
+            .orElseGet { roleRepository.save(Role(name = "USER", description = "Standard user")) }
+
+        val user = User(
+            username = username,
+            email = email,
+            passwordHash = passwordEncoder.encode(password),
+            roles = mutableSetOf(userRole)
+        )
+
+        val savedUser = userRepository.save(user)
+
+        auditService.log(
+            action = "USER_REGISTERED",
+            username = username,
+            resourceType = "USER",
+            resourceId = savedUser.id.toString(),
+            ipAddress = ipAddress,
+            details = "New user registered with email: $email"
+        )
+
+        return savedUser
+    }
+
+    fun login(username: String, password: String, ipAddress: String? = null): String {
+        val user = userRepository.findByUsername(username).orElse(null)
+
+        if (user == null) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "User not found",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Invalid credentials")
+        }
+
+        if (!passwordEncoder.matches(password, user.passwordHash)) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Invalid password",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Invalid credentials")
+        }
+
+        if (!user.enabled) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Account disabled",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Account is disabled")
+        }
+
+        userRepository.save(user.copy(lastLogin = Instant.now()))
+
+        auditService.log(
+            action = "USER_LOGIN",
+            username = username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = ipAddress
+        )
+
+        val roles = user.roles.map { it.name }
+        return jwtService.generateToken(user.username, roles)
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/BackendApplication.kt">
+// backend/src/main/kotlin/com/securemonitor/BackendApplication.kt
+package com.securemonitor
+
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
+
+@SpringBootApplication
+class BackendApplication
+
+fun main(args: Array<String>) {
+    runApplication<BackendApplication>(*args)
+}
+</file>
+
+<file path="backend/build.gradle.kts">
+// backend/build.gradle.kts
+plugins {
+	kotlin("jvm") version "1.9.25"
+	kotlin("plugin.spring") version "1.9.25"
+	id("org.springframework.boot") version "3.5.0"
+	id("io.spring.dependency-management") version "1.1.7"
+	kotlin("plugin.jpa") version "1.9.25"
+}
+
+group = "com.securemonitor"
+version = "0.0.1-SNAPSHOT"
+description = "Demo project for Spring Boot"
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+	implementation("org.springframework.boot:spring-boot-starter-security")
+	implementation("org.springframework.boot:spring-boot-starter-validation")
+	implementation("org.springframework.boot:spring-boot-starter-web")
+	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+	implementation("org.jetbrains.kotlin:kotlin-reflect")
+
+	runtimeOnly("org.postgresql:postgresql")
+	testImplementation("org.springframework.boot:spring-boot-starter-test")
+	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+	testImplementation("org.springframework.security:spring-security-test")
+	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+	// JWT 
+	implementation("io.jsonwebtoken:jjwt-api:0.12.5")
+	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.5")
+	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.5")
+
+	implementation("org.springframework.boot:spring-boot-starter-webflux")
+
+	implementation("me.paulschwarz:spring-dotenv:4.0.0")
+}
+
+kotlin {
+	compilerOptions {
+		freeCompilerArgs.addAll("-Xjsr305=strict")
+	}
+}
+
+allOpen {
+	annotation("jakarta.persistence.Entity")
+	annotation("jakarta.persistence.MappedSuperclass")
+	annotation("jakarta.persistence.Embeddable")
+}
+
+tasks.withType<Test> {
+	useJUnitPlatform()
+}
+</file>
+
+<file path="frontend/src/pages/DashboardPage.tsx">
+// frontend/src/pages/DashboardPage.tsx
+import { useState, useEffect } from 'react';
+import { useAuth } from '../hooks/useAuth';
+import { auditService } from '../services/api';
+import { Button } from '../components/ui/Button';
+import { AiChat } from '../components/chat/AiChat';
+import { AdminPanel } from '../components/admin/AdminPanel';
+import type { AuditLog } from '../types';
+
+interface DashboardPageProps {
+  onLogout: () => void;
+}
+
+export function DashboardPage({ onLogout }: DashboardPageProps) {
+  const { username, roles, logout, hasRole } = useAuth();
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const logs = await auditService.getRecentLogs();
+        setAuditLogs(logs);
+      } catch (err) {
+        setError('Failed to load audit logs');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchLogs();
+  }, []);
+
+  const handleLogout = () => {
+    logout();
+    onLogout();
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-xl font-bold text-gray-900">AI Security Monitor</h1>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-600 hidden sm:block">
+              {username}
+              {hasRole('ADMIN') && (
+                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">
+                  ADMIN
+                </span>
+              )}
+            </span>
+            <Button variant="secondary" onClick={handleLogout} className="!w-auto !py-2">
+              Logout
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {/* Top Row: User Info + AI Chat */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* User Info Card */}
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">User Profile</h2>
+            <div className="space-y-3">
+              <div>
+                <span className="text-sm text-gray-500">Username</span>
+                <p className="font-medium text-gray-900">{username}</p>
+              </div>
+              <div>
+                <span className="text-sm text-gray-500">Roles</span>
+                <div className="flex gap-2 mt-1">
+                  {roles.map((role) => (
+                    <span
+                      key={role}
+                      className={`px-3 py-1 rounded-full text-sm font-medium ${
+                        role === 'ADMIN' 
+                          ? 'bg-purple-100 text-purple-800' 
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
+                    >
+                      {role}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* AI Chat */}
+          <AiChat />
+        </div>
+
+        {/* Admin Panel - Only visible for admins */}
+        {hasRole('ADMIN') && <AdminPanel />}
+
+        {/* Audit Logs Card */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Security Audit Log</h2>
+          
+          {isLoading ? (
+            <div className="flex justify-center py-8">
+              <svg className="animate-spin h-8 w-8 text-blue-600" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            </div>
+          ) : error ? (
+            <div className="p-4 bg-red-50 rounded-lg">
+              <p className="text-red-600">{error}</p>
+            </div>
+          ) : auditLogs.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              No audit logs found
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              {/* Mobile View */}
+              <div className="sm:hidden space-y-4">
+                {auditLogs.map((log) => (
+                  <div key={log.id} className="border rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between items-start">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {log.action}
+                      </span>
+                      <span className="text-xs text-gray-500">{formatDate(log.timestamp)}</span>
+                    </div>
+                    <p className="text-sm text-gray-900">{log.username}</p>
+                    {log.ipAddress && (
+                      <p className="text-xs text-gray-500">IP: {log.ipAddress}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop View */}
+              <table className="hidden sm:table w-full">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Time</th>
+                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Action</th>
+                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">User</th>
+                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">IP Address</th>
+                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLogs.map((log) => (
+                    <tr key={log.id} className="border-b hover:bg-gray-50">
+                      <td className="py-3 px-4 text-sm text-gray-600">{formatDate(log.timestamp)}</td>
+                      <td className="py-3 px-4 text-sm font-medium text-gray-900">{log.action}</td>
+                      <td className="py-3 px-4 text-sm text-gray-600">{log.username}</td>
+                      <td className="py-3 px-4 text-sm text-gray-600">{log.ipAddress || '-'}</td>
+                      <td className="py-3 px-4">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                          {log.success ? 'Success' : 'Failed'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/services/api.ts">
+// frontend/src/services/api.ts
+import axios from 'axios';
+import type { AuthResponse, LoginRequest, RegisterRequest, AuditLog, UserResponse } from '../types';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Add token to requests if available
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Auth services
+export const authService = {
+  login: async (data: LoginRequest): Promise<AuthResponse> => {
+    const response = await api.post<AuthResponse>('/api/auth/login', data);
+    localStorage.setItem('token', response.data.token);
+    return response.data;
+  },
+
+  register: async (data: RegisterRequest): Promise<AuthResponse> => {
+    const response = await api.post<AuthResponse>('/api/auth/register', data);
+    localStorage.setItem('token', response.data.token);
+    return response.data;
+  },
+
+  logout: () => {
+    localStorage.removeItem('token');
+  },
+
+  getToken: () => localStorage.getItem('token'),
+
+  isAuthenticated: () => !!localStorage.getItem('token'),
+};
+
+// Audit services
+export const auditService = {
+  getRecentLogs: async (): Promise<AuditLog[]> => {
+    const response = await api.get<AuditLog[]>('/api/audit/logs');
+    return response.data;
+  },
+
+  getLogsByUsername: async (username: string): Promise<AuditLog[]> => {
+    const response = await api.get<AuditLog[]>(`/api/audit/logs/user/${username}`);
+    return response.data;
+  },
+};
+
+// Health check
+export const healthService = {
+  check: async () => {
+    const response = await api.get('/api/health');
+    return response.data;
+  },
+};
+
+// AI services
+export const aiService = {
+  chat: async (message: string): Promise<{ response: string; timestamp: string }> => {
+    const response = await api.post('/api/ai/chat', { message });
+    return response.data;
+  },
+};
+
+// Admin services 
+export const adminService = {
+  getAllUsers: async (): Promise<UserResponse[]> => {
+    const response = await api.get<UserResponse[]>('/api/admin/users');
+    return response.data;
+  },
+
+  addRoleToUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.post<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
+    return response.data;
+  },
+
+  removeRoleFromUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.delete<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
+    return response.data;
+  },
+};
+
+export default api;
+</file>
+
+<file path="README.md">
+# AI Security Monitor
+
+A full-stack IAM (Identity and Access Management) demonstration project featuring JWT authentication, role-based access control, audit logging, and AI-powered security assistance.
+
+## 🌐 Live Demo
+
+**Frontend:** https://ai-security-monitor.vercel.app
+
+## ✨ Features
+
+- **Authentication:** JWT-based login and registration
+- **RBAC:** Role-based access control (USER/ADMIN roles)
+- **Audit Logging:** All security events logged with timestamps and IP addresses
+- **AI Assistant:** Security-focused chat powered by Groq LLM
+- **Responsive Design:** Mobile-first UI
+
+## 🏗️ Architecture
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│  React Frontend │────▶│  Kotlin Backend │────▶│   PostgreSQL    │
+│  (Vercel)       │     │  (Railway)      │     │   (Railway)     │
+│                 │     │                 │     │                 │
+└─────────────────┘     └────────┬────────┘     └─────────────────┘
+                                 │
+                                 ▼
+                        ┌─────────────────┐
+                        │    Groq LLM     │
+                        │   (Cloud API)   │
+                        └─────────────────┘
+```
+
+## 🛠️ Tech Stack
+
+| Layer    | Technology                     |
+|----------|--------------------------------|
+| Frontend | React, TypeScript, Tailwind CSS |
+| Backend  | Kotlin, Spring Boot 3.5        |
+| Database | PostgreSQL 16                  |
+| Auth     | JWT (jjwt), BCrypt             |
+| AI       | Groq API (Llama 3.1)           |
+| Deploy   | Vercel (frontend), Railway (backend) |
+
+## 🚀 Local Development
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Node.js 20+
+- Java 21+
+
+### Quick Start (Docker)
+```bash
+# Clone the repository
+git clone https://github.com/dannyp19921/ai-security-monitor.git
+cd ai-security-monitor
+
+# Set your Groq API key
+export GROQ_API_KEY=your_key_here
+
+# Start backend and database
+docker-compose up -d
+
+# Start frontend
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 in your browser.
+
+### Manual Setup
+
+See [Backend README](./backend/README.md) and [Frontend README](./frontend/README.md) for detailed setup instructions.
+
+## 📁 Project Structure
+```
+ai-security-monitor/
+├── backend/                 # Kotlin Spring Boot API
+│   ├── src/main/kotlin/
+│   │   └── com/securemonitor/
+│   │       ├── config/      # Security, CORS configuration
+│   │       ├── controller/  # REST endpoints
+│   │       ├── dto/         # Data transfer objects
+│   │       ├── model/       # JPA entities
+│   │       ├── repository/  # Database repositories
+│   │       ├── security/    # JWT filter and service
+│   │       └── service/     # Business logic
+│   └── Dockerfile
+├── frontend/                # React TypeScript app
+│   ├── src/
+│   │   ├── components/      # Reusable UI components
+│   │   ├── hooks/           # Custom React hooks
+│   │   ├── pages/           # Page components
+│   │   ├── services/        # API clients
+│   │   └── types/           # TypeScript interfaces
+└── docker-compose.yml       # Local development setup
+```
+
+## 🔒 API Endpoints
+
+| Method | Endpoint                  | Auth     | Description           |
+|--------|---------------------------|----------|-----------------------|
+| GET    | /api/health               | Public   | Health check          |
+| POST   | /api/auth/register        | Public   | Register new user     |
+| POST   | /api/auth/login           | Public   | Login, returns JWT    |
+| GET    | /api/audit/logs           | Required | Get audit logs        |
+| POST   | /api/ai/chat              | Required | Chat with AI assistant|
+
+## 👤 Author
+
+Daniel-Aston Brandsgård Parker
+
+## 📄 License
+
+MIT
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/config/SecurityConfig.kt">
+// backend/src/main/kotlin/com/securemonitor/config/SecurityConfig.kt
+package com.securemonitor.config
+
+import com.securemonitor.security.JwtAuthenticationFilter
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
+import org.springframework.security.config.annotation.web.builders.HttpSecurity
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
+import org.springframework.security.config.http.SessionCreationPolicy
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.security.web.SecurityFilterChain
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter
+import org.springframework.web.cors.CorsConfiguration
+import org.springframework.web.cors.CorsConfigurationSource
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
+class SecurityConfig(
+    private val jwtAuthenticationFilter: JwtAuthenticationFilter
+) {
+
+    @Bean
+    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
+        http
+            .cors { it.configurationSource(corsConfigurationSource()) }
+            .csrf { it.disable() }
+            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .authorizeHttpRequests { auth ->
+                auth
+                    .requestMatchers("/api/health").permitAll()
+                    .requestMatchers("/api/auth/**").permitAll()
+                    .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                    .anyRequest().authenticated()
+            }
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
+
+        return http.build()
+    }
+
+    @Bean
+    fun corsConfigurationSource(): CorsConfigurationSource {
+        val configuration = CorsConfiguration()
+        configuration.allowedOrigins = listOf(
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "https://ai-security-monitor.vercel.app"
+        )
+        configuration.allowedMethods = listOf("GET", "POST", "PUT", "DELETE", "OPTIONS")
+        configuration.allowedHeaders = listOf("*")
+        configuration.allowCredentials = true
+
+        val source = UrlBasedCorsConfigurationSource()
+        source.registerCorsConfiguration("/**", configuration)
+        return source
+    }
+
+    @Bean
+    fun passwordEncoder(): PasswordEncoder {
+        return BCryptPasswordEncoder()
+    }
+}
+</file>
+
+<file path="backend/src/main/resources/application.yml">
+# backend/src/main/resources/application.yml
+spring:
+  application:
+    name: ai-security-monitor
+
+  datasource:
+    url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:securemonitor}
+    username: ${PGUSER:securemonitor}
+    password: ${PGPASSWORD:localdev123}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+server:
+  port: ${PORT:8080}
+
+groq:
+  api-key: ${GROQ_API_KEY:}
+  model: llama-3.1-8b-instant
+</file>
+
+</files>

@@ -16,6 +16,16 @@ import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.CorsConfigurationSource
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 
+/**
+ * Security configuration for the application.
+ * 
+ * Configures:
+ * - CORS settings
+ * - CSRF protection (disabled for stateless JWT auth)
+ * - Session management (stateless)
+ * - Endpoint authorization rules
+ * - JWT authentication filter
+ */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -28,12 +38,32 @@ class SecurityConfig(
         http
             .cors { it.configurationSource(corsConfigurationSource()) }
             .csrf { it.disable() }
-            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .sessionManagement { 
+                // Use stateless sessions for API endpoints
+                // OAuth2 authorize endpoint may need session for login flow
+                it.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
+            }
             .authorizeHttpRequests { auth ->
                 auth
+                    // Public health check
                     .requestMatchers("/api/health").permitAll()
+                    
+                    // Authentication endpoints
                     .requestMatchers("/api/auth/**").permitAll()
+                    
+                    // OAuth 2.0 / OIDC public endpoints
+                    .requestMatchers("/.well-known/openid-configuration").permitAll()
+                    .requestMatchers("/.well-known/jwks.json").permitAll()
+                    .requestMatchers("/oauth2/authorize").permitAll() // Requires auth inside handler
+                    .requestMatchers("/oauth2/token").permitAll()
+                    
+                    // OAuth 2.0 protected endpoints
+                    .requestMatchers("/oauth2/userinfo").authenticated()
+                    
+                    // Admin endpoints
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                    
+                    // All other requests require authentication
                     .anyRequest().authenticated()
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
@@ -47,10 +77,13 @@ class SecurityConfig(
         configuration.allowedOrigins = listOf(
             "http://localhost:5173",
             "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
             "https://ai-security-monitor.vercel.app"
         )
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "DELETE", "OPTIONS")
         configuration.allowedHeaders = listOf("*")
+        configuration.exposedHeaders = listOf("Location") // For OAuth2 redirects
         configuration.allowCredentials = true
 
         val source = UrlBasedCorsConfigurationSource()
