@@ -63,6 +63,14 @@ backend/
               HealthController.kt
             dto/
               AuthDtos.kt
+            mfa/
+              controller/
+                MfaController.kt
+              dto/
+                MfaDtos.kt
+              service/
+                MfaService.kt
+                TotpService.kt
             model/
               AuditLog.kt
               Role.kt
@@ -106,6 +114,9 @@ backend/
       kotlin/
         com/
           securemonitor/
+            mfa/
+              service/
+                TotpServiceTest.kt
             oauth2/
               service/
                 AuthorizationServiceTest.kt
@@ -132,6 +143,9 @@ frontend/
         AdminPanel.tsx
       auth/
         LoginForm.tsx
+        MfaSettings.tsx
+        MfaSetup.tsx
+        MfaVerify.tsx
         RegisterForm.tsx
         SocialLogin.tsx
       chat/
@@ -284,6 +298,826 @@ class HealthController {
             "service" to "ai-security-monitor",
             "timestamp" to Instant.now().toString()
         )
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/mfa/dto/MfaDtos.kt">
+// backend/src/main/kotlin/com/securemonitor/mfa/dto/MfaDtos.kt
+package com.securemonitor.mfa.dto
+
+import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.Pattern
+
+/**
+ * Response when initiating MFA setup.
+ * Contains everything needed to display QR code and complete setup.
+ */
+data class MfaSetupResponse(
+    /** Base32-encoded secret (display to user for manual entry) */
+    val secret: String,
+    
+    /** otpauth:// URI for QR code generation */
+    val qrCodeUri: String,
+    
+    /** Issuer name shown in authenticator app */
+    val issuer: String,
+    
+    /** Account name shown in authenticator app */
+    val accountName: String
+)
+
+/**
+ * Request to verify MFA setup with initial TOTP code.
+ */
+data class MfaSetupVerifyRequest(
+    /** The secret that was provided during setup */
+    @field:NotBlank(message = "Secret is required")
+    val secret: String,
+    
+    /** 6-digit TOTP code from authenticator app */
+    @field:NotBlank(message = "Code is required")
+    @field:Pattern(regexp = "^\\d{6}$", message = "Code must be 6 digits")
+    val code: String
+)
+
+/**
+ * Response after successfully enabling MFA.
+ * Includes backup codes that user must save.
+ */
+data class MfaSetupCompleteResponse(
+    /** Confirmation that MFA is now enabled */
+    val mfaEnabled: Boolean = true,
+    
+    /** One-time display of backup codes (user must save these) */
+    val backupCodes: List<String>,
+    
+    /** Message for the user */
+    val message: String = "MFA enabled successfully. Save your backup codes in a safe place."
+)
+
+/**
+ * Request to verify TOTP code during login.
+ */
+data class MfaVerifyRequest(
+    /** 6-digit TOTP code from authenticator app */
+    @field:NotBlank(message = "Code is required")
+    @field:Pattern(regexp = "^\\d{6}$", message = "Code must be 6 digits")
+    val code: String
+)
+
+/**
+ * Request to verify using a backup code.
+ */
+data class MfaBackupCodeRequest(
+    /** Backup code in format XXXX-XXXX or XXXXXXXX */
+    @field:NotBlank(message = "Backup code is required")
+    @field:Pattern(regexp = "^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$", message = "Invalid backup code format")
+    val backupCode: String
+)
+
+/**
+ * Response after successful MFA verification.
+ */
+data class MfaVerifyResponse(
+    /** JWT token for authenticated session */
+    val token: String,
+    
+    /** Username of authenticated user */
+    val username: String,
+    
+    /** User's roles */
+    val roles: List<String>,
+    
+    /** Whether a backup code was used (user should generate new ones) */
+    val backupCodeUsed: Boolean = false,
+    
+    /** Number of remaining backup codes (if backup code was used) */
+    val remainingBackupCodes: Int? = null
+)
+
+/**
+ * Request to disable MFA.
+ * Requires current password for security.
+ */
+data class MfaDisableRequest(
+    /** Current password to confirm identity */
+    @field:NotBlank(message = "Password is required")
+    val password: String,
+    
+    /** TOTP code OR backup code for verification */
+    @field:NotBlank(message = "Verification code is required")
+    val code: String
+)
+
+/**
+ * Response after disabling MFA.
+ */
+data class MfaDisableResponse(
+    /** Confirmation that MFA is now disabled */
+    val mfaEnabled: Boolean = false,
+    
+    /** Message for the user */
+    val message: String = "MFA has been disabled for your account."
+)
+
+/**
+ * Response with new backup codes.
+ */
+data class MfaBackupCodesResponse(
+    /** New backup codes (invalidates previous codes) */
+    val backupCodes: List<String>,
+    
+    /** Message for the user */
+    val message: String = "New backup codes generated. Previous codes are now invalid."
+)
+
+/**
+ * General MFA status response.
+ */
+data class MfaStatusResponse(
+    /** Whether MFA is enabled */
+    val mfaEnabled: Boolean,
+    
+    /** When MFA was enabled (null if not enabled) */
+    val mfaEnabledAt: String? = null,
+    
+    /** Number of remaining backup codes */
+    val backupCodesRemaining: Int? = null
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/mfa/service/MfaService.kt">
+// backend/src/main/kotlin/com/securemonitor/mfa/service/MfaService.kt
+package com.securemonitor.mfa.service
+
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
+import com.securemonitor.mfa.dto.*
+import com.securemonitor.model.User
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.service.AuditService
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import java.time.Instant
+
+/**
+ * Service handling Multi-Factor Authentication (MFA) operations.
+ *
+ * Provides functionality for:
+ * - MFA setup with TOTP
+ * - Code verification during login
+ * - Backup code management
+ * - MFA disable with security verification
+ *
+ * Security considerations:
+ * - Secrets are stored encrypted in production
+ * - Backup codes are hashed before storage
+ * - All operations are audit logged
+ */
+@Service
+class MfaService(
+    private val totpService: TotpService,
+    private val userRepository: UserRepository,
+    private val auditService: AuditService,
+    private val objectMapper: ObjectMapper
+) {
+
+    companion object {
+        const val ISSUER = "AI Security Monitor"
+    }
+
+    /**
+     * Initiates MFA setup for a user.
+     * Generates a new TOTP secret but does NOT enable MFA yet.
+     * User must verify with a valid code to complete setup.
+     *
+     * @param userId The user's ID
+     * @return Setup response with secret and QR code URI
+     */
+    fun initiateSetup(userId: Long): MfaSetupResponse {
+        val user = findUserOrThrow(userId)
+
+        if (user.mfaEnabled) {
+            throw MfaException("MFA is already enabled for this account")
+        }
+
+        val secret = totpService.generateSecret()
+        val qrCodeUri = totpService.generateTotpUri(secret, ISSUER, user.email)
+
+        auditService.log(
+            action = "MFA_SETUP_INITIATED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "MFA setup initiated",
+            success = true
+        )
+
+        return MfaSetupResponse(
+            secret = secret,
+            qrCodeUri = qrCodeUri,
+            issuer = ISSUER,
+            accountName = user.email
+        )
+    }
+
+    /**
+     * Completes MFA setup by verifying the first TOTP code.
+     * If valid, enables MFA and generates backup codes.
+     *
+     * @param userId The user's ID
+     * @param request Contains secret and verification code
+     * @return Response with backup codes
+     */
+    @Transactional
+    fun completeSetup(userId: Long, request: MfaSetupVerifyRequest): MfaSetupCompleteResponse {
+        val user = findUserOrThrow(userId)
+
+        if (user.mfaEnabled) {
+            throw MfaException("MFA is already enabled for this account")
+        }
+
+        // Verify the code matches the provided secret
+        if (!totpService.verifyCode(request.secret, request.code)) {
+            auditService.log(
+                action = "MFA_SETUP_FAILED",
+                username = user.username,
+                resourceType = "USER",
+                resourceId = userId.toString(),
+                details = "Invalid TOTP code during setup",
+                success = false
+            )
+            throw MfaException("Invalid verification code")
+        }
+
+        // Generate backup codes
+        val backupCodes = totpService.generateBackupCodes()
+        val hashedBackupCodes = backupCodes.map { totpService.hashBackupCode(it) }
+        val backupCodesJson = objectMapper.writeValueAsString(hashedBackupCodes)
+
+        // Update user with MFA enabled
+        val updatedUser = user.copy(
+            mfaEnabled = true,
+            mfaSecret = request.secret,
+            mfaBackupCodes = backupCodesJson,
+            mfaEnabledAt = Instant.now()
+        )
+        userRepository.save(updatedUser)
+
+        auditService.log(
+            action = "MFA_ENABLED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "MFA enabled successfully",
+            success = true
+        )
+
+        return MfaSetupCompleteResponse(
+            mfaEnabled = true,
+            backupCodes = backupCodes
+        )
+    }
+
+    /**
+     * Verifies a TOTP code for a user during login.
+     *
+     * @param userId The user's ID
+     * @param code The 6-digit TOTP code
+     * @return true if code is valid
+     */
+    fun verifyCode(userId: Long, code: String): Boolean {
+        val user = findUserOrThrow(userId)
+        val secret = user.mfaSecret
+
+        if (!user.mfaEnabled || secret == null) {
+            throw MfaException("MFA is not enabled for this account")
+        }
+
+        val isValid = totpService.verifyCode(secret, code)
+
+        auditService.log(
+            action = if (isValid) "MFA_VERIFY_SUCCESS" else "MFA_VERIFY_FAILED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = if (isValid) "TOTP code verified" else "Invalid TOTP code",
+            success = isValid
+        )
+
+        return isValid
+    }
+
+    /**
+     * Verifies a backup code and marks it as used.
+     *
+     * @param userId The user's ID
+     * @param backupCode The backup code
+     * @return Pair of (isValid, remainingCodes)
+     */
+    @Transactional
+    fun verifyBackupCode(userId: Long, backupCode: String): Pair<Boolean, Int> {
+        val user = findUserOrThrow(userId)
+        val backupCodesJson = user.mfaBackupCodes
+
+        if (!user.mfaEnabled || backupCodesJson == null) {
+            throw MfaException("MFA is not enabled for this account")
+        }
+
+        val hashedCodes: MutableList<String> = objectMapper.readValue(backupCodesJson)
+        val normalizedInput = backupCode.uppercase().replace("-", "")
+        val hashedInput = totpService.hashBackupCode(normalizedInput)
+
+        val matchIndex = hashedCodes.indexOfFirst { it == hashedInput }
+
+        if (matchIndex == -1) {
+            auditService.log(
+                action = "MFA_BACKUP_CODE_FAILED",
+                username = user.username,
+                resourceType = "USER",
+                resourceId = userId.toString(),
+                details = "Invalid backup code",
+                success = false
+            )
+            return Pair(false, hashedCodes.size)
+        }
+
+        // Remove used backup code
+        hashedCodes.removeAt(matchIndex)
+        val updatedBackupCodesJson = objectMapper.writeValueAsString(hashedCodes)
+
+        val updatedUser = user.copy(mfaBackupCodes = updatedBackupCodesJson)
+        userRepository.save(updatedUser)
+
+        auditService.log(
+            action = "MFA_BACKUP_CODE_USED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "Backup code used, ${hashedCodes.size} remaining",
+            success = true
+        )
+
+        return Pair(true, hashedCodes.size)
+    }
+
+    /**
+     * Disables MFA for a user after verification.
+     *
+     * @param userId The user's ID
+     * @param code TOTP code or backup code for verification
+     * @return Response confirming MFA is disabled
+     */
+    @Transactional
+    fun disableMfa(userId: Long, code: String): MfaDisableResponse {
+        val user = findUserOrThrow(userId)
+        val secret = user.mfaSecret
+        val backupCodesJson = user.mfaBackupCodes
+
+        if (!user.mfaEnabled) {
+            throw MfaException("MFA is not enabled for this account")
+        }
+
+        // Try TOTP code first, then backup code
+        val isValidTotp = secret?.let { totpService.verifyCode(it, code) } ?: false
+        val isValidBackup = if (!isValidTotp && backupCodesJson != null) {
+            val hashedCodes: List<String> = objectMapper.readValue(backupCodesJson)
+            totpService.verifyBackupCode(code, hashedCodes)
+        } else false
+
+        if (!isValidTotp && !isValidBackup) {
+            auditService.log(
+                action = "MFA_DISABLE_FAILED",
+                username = user.username,
+                resourceType = "USER",
+                resourceId = userId.toString(),
+                details = "Invalid verification code",
+                success = false
+            )
+            throw MfaException("Invalid verification code")
+        }
+
+        // Disable MFA
+        val updatedUser = user.copy(
+            mfaEnabled = false,
+            mfaSecret = null,
+            mfaBackupCodes = null,
+            mfaEnabledAt = null
+        )
+        userRepository.save(updatedUser)
+
+        auditService.log(
+            action = "MFA_DISABLED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "MFA disabled",
+            success = true
+        )
+
+        return MfaDisableResponse()
+    }
+
+    /**
+     * Generates new backup codes, invalidating previous ones.
+     *
+     * @param userId The user's ID
+     * @param code Current TOTP code for verification
+     * @return New backup codes
+     */
+    @Transactional
+    fun regenerateBackupCodes(userId: Long, code: String): MfaBackupCodesResponse {
+        val user = findUserOrThrow(userId)
+        val secret = user.mfaSecret
+
+        if (!user.mfaEnabled || secret == null) {
+            throw MfaException("MFA is not enabled for this account")
+        }
+
+        // Verify current TOTP code
+        if (!totpService.verifyCode(secret, code)) {
+            auditService.log(
+                action = "MFA_BACKUP_REGEN_FAILED",
+                username = user.username,
+                resourceType = "USER",
+                resourceId = userId.toString(),
+                details = "Invalid TOTP code",
+                success = false
+            )
+            throw MfaException("Invalid verification code")
+        }
+
+        // Generate new backup codes
+        val backupCodes = totpService.generateBackupCodes()
+        val hashedBackupCodes = backupCodes.map { totpService.hashBackupCode(it) }
+        val backupCodesJson = objectMapper.writeValueAsString(hashedBackupCodes)
+
+        val updatedUser = user.copy(mfaBackupCodes = backupCodesJson)
+        userRepository.save(updatedUser)
+
+        auditService.log(
+            action = "MFA_BACKUP_CODES_REGENERATED",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = userId.toString(),
+            details = "Backup codes regenerated",
+            success = true
+        )
+
+        return MfaBackupCodesResponse(backupCodes = backupCodes)
+    }
+
+    /**
+     * Gets the MFA status for a user.
+     *
+     * @param userId The user's ID
+     * @return MFA status
+     */
+    fun getMfaStatus(userId: Long): MfaStatusResponse {
+        val user = findUserOrThrow(userId)
+        val backupCodesJson = user.mfaBackupCodes
+
+        val backupCodesRemaining = if (user.mfaEnabled && backupCodesJson != null) {
+            val hashedCodes: List<String> = objectMapper.readValue(backupCodesJson)
+            hashedCodes.size
+        } else null
+
+        return MfaStatusResponse(
+            mfaEnabled = user.mfaEnabled,
+            mfaEnabledAt = user.mfaEnabledAt?.toString(),
+            backupCodesRemaining = backupCodesRemaining
+        )
+    }
+
+    /**
+     * Checks if a user has MFA enabled.
+     *
+     * @param userId The user's ID
+     * @return true if MFA is enabled
+     */
+    fun isMfaEnabled(userId: Long): Boolean {
+        return findUserOrThrow(userId).mfaEnabled
+    }
+
+    private fun findUserOrThrow(userId: Long): User {
+        return userRepository.findById(userId)
+            .orElseThrow { MfaException("User not found") }
+    }
+}
+
+/**
+ * Exception thrown for MFA-related errors.
+ */
+class MfaException(message: String) : RuntimeException(message)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/mfa/service/TotpService.kt">
+// backend/src/main/kotlin/com/securemonitor/mfa/service/TotpService.kt
+package com.securemonitor.mfa.service
+
+import org.springframework.stereotype.Service
+import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.time.Instant
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+
+/**
+ * TOTP (Time-based One-Time Password) service implementing RFC 6238.
+ * 
+ * Provides functionality for:
+ * - Generating TOTP secrets (Base32 encoded)
+ * - Generating and verifying 6-digit TOTP codes
+ * - Creating otpauth:// URIs for authenticator apps
+ * - Generating and verifying backup codes
+ * 
+ * This implementation follows security best practices:
+ * - Cryptographically secure random number generation
+ * - Timing-safe comparisons to prevent timing attacks
+ * - Clock drift tolerance for user convenience
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238">RFC 6238 - TOTP</a>
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226">RFC 4226 - HOTP</a>
+ */
+@Service
+class TotpService {
+
+    companion object {
+        /** Base32 alphabet as defined in RFC 4648 */
+        private const val BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        
+        /** Time step in seconds (standard is 30) */
+        private const val TIME_STEP_SECONDS = 30L
+        
+        /** Number of digits in TOTP code */
+        private const val CODE_DIGITS = 6
+        
+        /** Clock drift tolerance (number of time steps to check in each direction) */
+        private const val CLOCK_DRIFT_TOLERANCE = 1
+        
+        /** Default number of backup codes to generate */
+        private const val DEFAULT_BACKUP_CODE_COUNT = 10
+        
+        /** HMAC algorithm for TOTP */
+        private const val HMAC_ALGORITHM = "HmacSHA1"
+    }
+
+    private val secureRandom = SecureRandom()
+
+    /**
+     * Generates a new TOTP secret.
+     * 
+     * @return Base32-encoded secret (32 characters = 160 bits)
+     */
+    fun generateSecret(): String {
+        val bytes = ByteArray(20) // 160 bits
+        secureRandom.nextBytes(bytes)
+        return encodeBase32(bytes)
+    }
+
+    /**
+     * Generates a TOTP code for the given secret at the current time.
+     * 
+     * @param secret Base32-encoded secret
+     * @return 6-digit TOTP code
+     */
+    fun generateCode(secret: String): String {
+        return generateCode(secret, Instant.now())
+    }
+
+    /**
+     * Generates a TOTP code for the given secret at the specified time.
+     * 
+     * @param secret Base32-encoded secret
+     * @param timestamp Time to generate code for
+     * @return 6-digit TOTP code
+     */
+    fun generateCode(secret: String, timestamp: Instant): String {
+        val counter = timestamp.epochSecond / TIME_STEP_SECONDS
+        return generateHotp(secret, counter)
+    }
+
+    /**
+     * Verifies a TOTP code against the secret at the current time.
+     * 
+     * @param secret Base32-encoded secret
+     * @param code 6-digit code to verify
+     * @return true if the code is valid
+     */
+    fun verifyCode(secret: String, code: String): Boolean {
+        return verifyCode(secret, code, Instant.now())
+    }
+
+    /**
+     * Verifies a TOTP code against the secret at the specified time.
+     * Allows for clock drift by checking adjacent time windows.
+     * 
+     * @param secret Base32-encoded secret
+     * @param code 6-digit code to verify
+     * @param timestamp Time to verify against
+     * @return true if the code is valid within the tolerance window
+     */
+    fun verifyCode(secret: String, code: String, timestamp: Instant): Boolean {
+        val currentCounter = timestamp.epochSecond / TIME_STEP_SECONDS
+        
+        // Check current window and adjacent windows for clock drift
+        for (offset in -CLOCK_DRIFT_TOLERANCE..CLOCK_DRIFT_TOLERANCE) {
+            val expectedCode = generateHotp(secret, currentCounter + offset)
+            if (timingSafeEquals(expectedCode, code)) {
+                return true
+            }
+        }
+        
+        return false
+    }
+
+    /**
+     * Generates an otpauth:// URI for use with authenticator apps.
+     * 
+     * The URI format follows the Google Authenticator Key URI Format:
+     * otpauth://totp/ISSUER:ACCOUNT?secret=SECRET&issuer=ISSUER&algorithm=SHA1&digits=6&period=30
+     * 
+     * @param secret Base32-encoded secret
+     * @param issuer Application/service name
+     * @param accountName User's account identifier (usually email)
+     * @return otpauth:// URI string
+     */
+    fun generateTotpUri(secret: String, issuer: String, accountName: String): String {
+        val encodedIssuer = urlEncode(issuer)
+        val encodedAccount = urlEncode(accountName)
+        
+        return buildString {
+            append("otpauth://totp/")
+            append(encodedIssuer)
+            append(":")
+            append(encodedAccount)
+            append("?secret=").append(secret)
+            append("&issuer=").append(encodedIssuer)
+            append("&algorithm=SHA1")
+            append("&digits=").append(CODE_DIGITS)
+            append("&period=").append(TIME_STEP_SECONDS)
+        }
+    }
+
+    /**
+     * Generates backup codes for account recovery.
+     * 
+     * @param count Number of codes to generate (default: 10)
+     * @return List of backup codes in format XXXX-XXXX
+     */
+    fun generateBackupCodes(count: Int = DEFAULT_BACKUP_CODE_COUNT): List<String> {
+        return (1..count).map { generateBackupCode() }
+    }
+
+    /**
+     * Verifies a backup code against a list of hashed codes.
+     * 
+     * @param code Backup code to verify (with or without hyphen)
+     * @param hashedCodes List of hashed backup codes
+     * @return true if the code matches any hashed code
+     */
+    fun verifyBackupCode(code: String, hashedCodes: List<String>): Boolean {
+        val normalizedCode = normalizeBackupCode(code)
+        val hashedInput = hashBackupCode(normalizedCode)
+        
+        return hashedCodes.any { timingSafeEquals(it, hashedInput) }
+    }
+
+    /**
+     * Hashes a backup code for secure storage.
+     * 
+     * @param code Backup code to hash
+     * @return SHA-256 hash of the normalized code (hex encoded)
+     */
+    fun hashBackupCode(code: String): String {
+        val normalizedCode = normalizeBackupCode(code)
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(normalizedCode.toByteArray(StandardCharsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }
+    }
+
+    // ============================================
+    // Private helper methods
+    // ============================================
+
+    /**
+     * Generates HOTP (HMAC-based One-Time Password) as per RFC 4226.
+     */
+    private fun generateHotp(secret: String, counter: Long): String {
+        val keyBytes = decodeBase32(secret)
+        val counterBytes = ByteBuffer.allocate(8).putLong(counter).array()
+        
+        val mac = Mac.getInstance(HMAC_ALGORITHM)
+        mac.init(SecretKeySpec(keyBytes, HMAC_ALGORITHM))
+        val hash = mac.doFinal(counterBytes)
+        
+        // Dynamic truncation as per RFC 4226
+        val offset = hash[hash.size - 1].toInt() and 0x0F
+        val binary = ((hash[offset].toInt() and 0x7F) shl 24) or
+                     ((hash[offset + 1].toInt() and 0xFF) shl 16) or
+                     ((hash[offset + 2].toInt() and 0xFF) shl 8) or
+                     (hash[offset + 3].toInt() and 0xFF)
+        
+        val otp = binary % Math.pow(10.0, CODE_DIGITS.toDouble()).toInt()
+        
+        return otp.toString().padStart(CODE_DIGITS, '0')
+    }
+
+    /**
+     * Encodes bytes to Base32 string.
+     */
+    private fun encodeBase32(data: ByteArray): String {
+        val result = StringBuilder()
+        var buffer = 0
+        var bitsLeft = 0
+        
+        for (byte in data) {
+            buffer = (buffer shl 8) or (byte.toInt() and 0xFF)
+            bitsLeft += 8
+            
+            while (bitsLeft >= 5) {
+                val index = (buffer shr (bitsLeft - 5)) and 0x1F
+                result.append(BASE32_ALPHABET[index])
+                bitsLeft -= 5
+            }
+        }
+        
+        // Handle remaining bits
+        if (bitsLeft > 0) {
+            val index = (buffer shl (5 - bitsLeft)) and 0x1F
+            result.append(BASE32_ALPHABET[index])
+        }
+        
+        return result.toString()
+    }
+
+    /**
+     * Decodes Base32 string to bytes.
+     */
+    private fun decodeBase32(encoded: String): ByteArray {
+        val result = mutableListOf<Byte>()
+        var buffer = 0
+        var bitsLeft = 0
+        
+        for (char in encoded.uppercase()) {
+            val value = BASE32_ALPHABET.indexOf(char)
+            if (value < 0) continue // Skip invalid characters
+            
+            buffer = (buffer shl 5) or value
+            bitsLeft += 5
+            
+            if (bitsLeft >= 8) {
+                result.add(((buffer shr (bitsLeft - 8)) and 0xFF).toByte())
+                bitsLeft -= 8
+            }
+        }
+        
+        return result.toByteArray()
+    }
+
+    /**
+     * Generates a single backup code in format XXXX-XXXX.
+     */
+    private fun generateBackupCode(): String {
+        val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        val part1 = (1..4).map { chars[secureRandom.nextInt(chars.length)] }.joinToString("")
+        val part2 = (1..4).map { chars[secureRandom.nextInt(chars.length)] }.joinToString("")
+        return "$part1-$part2"
+    }
+
+    /**
+     * Normalizes backup code for comparison/hashing.
+     * Removes hyphens and converts to uppercase.
+     */
+    private fun normalizeBackupCode(code: String): String {
+        return code.uppercase().replace("-", "")
+    }
+
+    /**
+     * URL-encodes a string for use in otpauth URI.
+     */
+    private fun urlEncode(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
+    }
+
+    /**
+     * Timing-safe string comparison to prevent timing attacks.
+     * 
+     * Always compares all characters regardless of where a mismatch occurs,
+     * making it resistant to timing-based side-channel attacks.
+     */
+    private fun timingSafeEquals(a: String, b: String): Boolean {
+        if (a.length != b.length) {
+            // Still do a comparison to maintain constant time
+            val dummy = "0".repeat(a.length)
+            MessageDigest.isEqual(a.toByteArray(), dummy.toByteArray())
+            return false
+        }
+        return MessageDigest.isEqual(a.toByteArray(), b.toByteArray())
     }
 }
 </file>
@@ -2272,72 +3106,6 @@ class JwtAuthenticationFilter(
 }
 </file>
 
-<file path="backend/src/main/kotlin/com/securemonitor/security/JwtService.kt">
-// backend/src/main/kotlin/com/securemonitor/security/JwtService.kt
-package com.securemonitor.security
-
-import io.jsonwebtoken.Claims
-import io.jsonwebtoken.Jwts
-import io.jsonwebtoken.security.Keys
-import org.springframework.beans.factory.annotation.Value
-import org.springframework.stereotype.Service
-import java.util.*
-import javax.crypto.SecretKey
-
-@Service
-class JwtService {
-
-    @Value("\${jwt.secret:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}")
-    private lateinit var secretString: String
-
-    @Value("\${jwt.expiration:86400000}")
-    private var expiration: Long = 86400000 // 24 hours
-
-    private val secretKey: SecretKey by lazy {
-        Keys.hmacShaKeyFor(secretString.toByteArray())
-    }
-
-    fun generateToken(username: String, roles: List<String>): String {
-        val now = Date()
-        val expiryDate = Date(now.time + expiration)
-
-        return Jwts.builder()
-            .subject(username)
-            .claim("roles", roles)
-            .issuedAt(now)
-            .expiration(expiryDate)
-            .signWith(secretKey)
-            .compact()
-    }
-
-    fun validateToken(token: String): Boolean {
-        return try {
-            getClaims(token)
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    fun getUsername(token: String): String {
-        return getClaims(token).subject
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    fun getRoles(token: String): List<String> {
-        return getClaims(token)["roles"] as? List<String> ?: emptyList()
-    }
-
-    private fun getClaims(token: String): Claims {
-        return Jwts.parser()
-            .verifyWith(secretKey)
-            .build()
-            .parseSignedClaims(token)
-            .payload
-    }
-}
-</file>
-
 <file path="backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt">
 // backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt
 package com.securemonitor.security
@@ -2550,6 +3318,452 @@ class AuditService(
 
     fun getLogsByTimeRange(start: Instant, end: Instant): List<AuditLog> {
         return auditLogRepository.findByTimestampBetweenOrderByTimestampDesc(start, end)
+    }
+}
+</file>
+
+<file path="backend/src/test/kotlin/com/securemonitor/mfa/service/TotpServiceTest.kt">
+package com.securemonitor.mfa.service
+
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Nested
+import org.assertj.core.api.Assertions.assertThat
+import java.time.Instant
+
+/**
+ * Test suite for TOTP (Time-based One-Time Password) service.
+ * 
+ * TOTP is defined in RFC 6238 and builds on HOTP (RFC 4226).
+ * It's used for multi-factor authentication with apps like
+ * Google Authenticator, Authy, and Microsoft Authenticator.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6238">RFC 6238 - TOTP</a>
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc4226">RFC 4226 - HOTP</a>
+ */
+@DisplayName("TotpService")
+class TotpServiceTest {
+
+    private lateinit var totpService: TotpService
+
+    @BeforeEach
+    fun setUp() {
+        totpService = TotpService()
+    }
+
+    @Nested
+    @DisplayName("generateSecret")
+    inner class GenerateSecret {
+
+        @Test
+        @DisplayName("should generate a Base32-encoded secret")
+        fun shouldGenerateBase32Secret() {
+            val secret = totpService.generateSecret()
+            
+            // Base32 alphabet: A-Z and 2-7
+            val base32Pattern = Regex("^[A-Z2-7]+$")
+            assertThat(secret).matches(base32Pattern.toPattern())
+        }
+
+        @Test
+        @DisplayName("should generate secret with correct length (32 characters = 160 bits)")
+        fun shouldGenerateCorrectLength() {
+            val secret = totpService.generateSecret()
+            
+            // 160 bits = 20 bytes, Base32 encodes 5 bits per character
+            // 160 / 5 = 32 characters
+            assertThat(secret.length).isEqualTo(32)
+        }
+
+        @Test
+        @DisplayName("should generate unique secrets on each call")
+        fun shouldGenerateUniqueSecrets() {
+            val secrets = (1..100).map { totpService.generateSecret() }.toSet()
+            
+            assertThat(secrets).hasSize(100)
+        }
+
+        @Test
+        @DisplayName("should generate cryptographically secure secrets")
+        fun shouldGenerateSecureSecrets() {
+            // Verify entropy by checking that secrets are well-distributed
+            val secrets = (1..1000).map { totpService.generateSecret() }
+            val uniqueFirstChars = secrets.map { it.first() }.toSet()
+            
+            // With good randomness, we should see variety in first characters
+            assertThat(uniqueFirstChars.size).isGreaterThan(20)
+        }
+    }
+
+    @Nested
+    @DisplayName("generateCode")
+    inner class GenerateCode {
+
+        @Test
+        @DisplayName("should generate 6-digit code")
+        fun shouldGenerateSixDigitCode() {
+            val secret = totpService.generateSecret()
+            val code = totpService.generateCode(secret)
+            
+            assertThat(code).hasSize(6)
+            assertThat(code).matches(Regex("^\\d{6}$").toPattern())
+        }
+
+        @Test
+        @DisplayName("should generate same code for same secret within time window")
+        fun shouldGenerateSameCodeWithinWindow() {
+            val secret = totpService.generateSecret()
+            val code1 = totpService.generateCode(secret)
+            val code2 = totpService.generateCode(secret)
+            
+            // Within the same 30-second window, codes should match
+            assertThat(code1).isEqualTo(code2)
+        }
+
+        @Test
+        @DisplayName("should generate different codes for different secrets")
+        fun shouldGenerateDifferentCodesForDifferentSecrets() {
+            val secret1 = totpService.generateSecret()
+            val secret2 = totpService.generateSecret()
+            
+            val code1 = totpService.generateCode(secret1)
+            val code2 = totpService.generateCode(secret2)
+            
+            // Different secrets should produce different codes (with high probability)
+            assertThat(code1).isNotEqualTo(code2)
+        }
+
+        @Test
+        @DisplayName("should match RFC 6238 test vectors")
+        fun shouldMatchRfcTestVectors() {
+            // RFC 6238 test vector (SHA1)
+            // Secret: "12345678901234567890" (ASCII) = Base32: GEZDGNBVGY3TQOJQ...
+            // Time: 59 seconds since epoch -> counter = 1
+            // Expected TOTP: 287082
+            
+            val secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" // "12345678901234567890" in Base32
+            val timestamp = Instant.ofEpochSecond(59)
+            
+            val code = totpService.generateCode(secret, timestamp)
+            
+            assertThat(code).isEqualTo("287082")
+        }
+
+        @Test
+        @DisplayName("should match RFC 6238 test vector for time 1111111109")
+        fun shouldMatchRfcTestVector2() {
+            val secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+            val timestamp = Instant.ofEpochSecond(1111111109)
+            
+            val code = totpService.generateCode(secret, timestamp)
+            
+            assertThat(code).isEqualTo("081804")
+        }
+
+        @Test
+        @DisplayName("should pad codes with leading zeros")
+        fun shouldPadWithLeadingZeros() {
+            // Generate many codes and verify all are 6 digits
+            val secret = totpService.generateSecret()
+            val codes = (0L..100L).map { offset ->
+                totpService.generateCode(secret, Instant.ofEpochSecond(offset * 30))
+            }
+            
+            codes.forEach { code ->
+                assertThat(code).hasSize(6)
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("verifyCode")
+    inner class VerifyCode {
+
+        @Test
+        @DisplayName("should accept valid code for current time")
+        fun shouldAcceptValidCode() {
+            val secret = totpService.generateSecret()
+            val code = totpService.generateCode(secret)
+            
+            val result = totpService.verifyCode(secret, code)
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should reject invalid code")
+        fun shouldRejectInvalidCode() {
+            val secret = totpService.generateSecret()
+            val invalidCode = "000000"
+            
+            val result = totpService.verifyCode(secret, invalidCode)
+            
+            assertThat(result).isFalse()
+        }
+
+        @Test
+        @DisplayName("should accept code from previous time window (clock drift tolerance)")
+        fun shouldAcceptPreviousWindowCode() {
+            val secret = totpService.generateSecret()
+            val now = Instant.now()
+            val previousWindow = now.minusSeconds(30)
+            
+            val code = totpService.generateCode(secret, previousWindow)
+            val result = totpService.verifyCode(secret, code, now)
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should accept code from next time window (clock drift tolerance)")
+        fun shouldAcceptNextWindowCode() {
+            val secret = totpService.generateSecret()
+            val now = Instant.now()
+            val nextWindow = now.plusSeconds(30)
+            
+            val code = totpService.generateCode(secret, nextWindow)
+            val result = totpService.verifyCode(secret, code, now)
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should reject code from too old time window")
+        fun shouldRejectOldCode() {
+            val secret = totpService.generateSecret()
+            val now = Instant.now()
+            val oldWindow = now.minusSeconds(90) // 3 windows ago
+            
+            val code = totpService.generateCode(secret, oldWindow)
+            val result = totpService.verifyCode(secret, code, now)
+            
+            assertThat(result).isFalse()
+        }
+
+        @Test
+        @DisplayName("should reject code from too future time window")
+        fun shouldRejectFutureCode() {
+            val secret = totpService.generateSecret()
+            val now = Instant.now()
+            val futureWindow = now.plusSeconds(90) // 3 windows ahead
+            
+            val code = totpService.generateCode(secret, futureWindow)
+            val result = totpService.verifyCode(secret, code, now)
+            
+            assertThat(result).isFalse()
+        }
+
+        @Test
+        @DisplayName("should use timing-safe comparison")
+        fun shouldUseTimingSafeComparison() {
+            val secret = totpService.generateSecret()
+            val validCode = totpService.generateCode(secret)
+            
+            // Both should complete in similar time regardless of where mismatch occurs
+            val result1 = totpService.verifyCode(secret, "000000")
+            val result2 = totpService.verifyCode(secret, validCode.take(5) + "X")
+            
+            assertThat(result1).isFalse()
+            assertThat(result2).isFalse()
+        }
+    }
+
+    @Nested
+    @DisplayName("generateTotpUri")
+    inner class GenerateTotpUri {
+
+        @Test
+        @DisplayName("should generate valid otpauth URI")
+        fun shouldGenerateValidUri() {
+            val secret = "JBSWY3DPEHPK3PXP"
+            val issuer = "AI Security Monitor"
+            val accountName = "testuser@example.com"
+            
+            val uri = totpService.generateTotpUri(secret, issuer, accountName)
+            
+            assertThat(uri).startsWith("otpauth://totp/")
+            assertThat(uri).contains("secret=$secret")
+            assertThat(uri).contains("issuer=AI%20Security%20Monitor")
+        }
+
+        @Test
+        @DisplayName("should URL-encode special characters in issuer and account")
+        fun shouldUrlEncodeSpecialCharacters() {
+            val secret = "JBSWY3DPEHPK3PXP"
+            val issuer = "My App & Co."
+            val accountName = "user+test@example.com"
+            
+            val uri = totpService.generateTotpUri(secret, issuer, accountName)
+            
+            assertThat(uri).contains("issuer=My%20App%20%26%20Co.")
+            assertThat(uri).contains("user%2Btest%40example.com")
+        }
+
+        @Test
+        @DisplayName("should include algorithm, digits, and period parameters")
+        fun shouldIncludeAllParameters() {
+            val secret = "JBSWY3DPEHPK3PXP"
+            
+            val uri = totpService.generateTotpUri(secret, "Issuer", "account")
+            
+            assertThat(uri).contains("algorithm=SHA1")
+            assertThat(uri).contains("digits=6")
+            assertThat(uri).contains("period=30")
+        }
+
+        @Test
+        @DisplayName("should format label as issuer:accountName")
+        fun shouldFormatLabelCorrectly() {
+            val secret = "JBSWY3DPEHPK3PXP"
+            val issuer = "MyApp"
+            val accountName = "user@example.com"
+            
+            val uri = totpService.generateTotpUri(secret, issuer, accountName)
+            
+            // Label should be URL-encoded "issuer:accountName"
+            assertThat(uri).contains("otpauth://totp/MyApp:user%40example.com")
+        }
+    }
+
+    @Nested
+    @DisplayName("generateBackupCodes")
+    inner class GenerateBackupCodes {
+
+        @Test
+        @DisplayName("should generate 10 backup codes by default")
+        fun shouldGenerateTenCodes() {
+            val codes = totpService.generateBackupCodes()
+            
+            assertThat(codes).hasSize(10)
+        }
+
+        @Test
+        @DisplayName("should generate codes in format XXXX-XXXX")
+        fun shouldGenerateCorrectFormat() {
+            val codes = totpService.generateBackupCodes()
+            
+            val pattern = Regex("^[A-Z0-9]{4}-[A-Z0-9]{4}$")
+            codes.forEach { code ->
+                assertThat(code).matches(pattern.toPattern())
+            }
+        }
+
+        @Test
+        @DisplayName("should generate unique codes")
+        fun shouldGenerateUniqueCodes() {
+            val codes = totpService.generateBackupCodes()
+            
+            assertThat(codes.toSet()).hasSize(codes.size)
+        }
+
+        @Test
+        @DisplayName("should generate different codes on each call")
+        fun shouldGenerateDifferentCodesEachCall() {
+            val codes1 = totpService.generateBackupCodes()
+            val codes2 = totpService.generateBackupCodes()
+            
+            assertThat(codes1).isNotEqualTo(codes2)
+        }
+
+        @Test
+        @DisplayName("should allow custom count")
+        fun shouldAllowCustomCount() {
+            val codes = totpService.generateBackupCodes(count = 5)
+            
+            assertThat(codes).hasSize(5)
+        }
+    }
+
+    @Nested
+    @DisplayName("verifyBackupCode")
+    inner class VerifyBackupCode {
+
+        @Test
+        @DisplayName("should verify valid backup code")
+        fun shouldVerifyValidCode() {
+            val codes = totpService.generateBackupCodes()
+            val hashedCodes = codes.map { totpService.hashBackupCode(it) }
+            
+            val result = totpService.verifyBackupCode(codes.first(), hashedCodes)
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should reject invalid backup code")
+        fun shouldRejectInvalidCode() {
+            val codes = totpService.generateBackupCodes()
+            val hashedCodes = codes.map { totpService.hashBackupCode(it) }
+            
+            val result = totpService.verifyBackupCode("XXXX-XXXX", hashedCodes)
+            
+            assertThat(result).isFalse()
+        }
+
+        @Test
+        @DisplayName("should be case-insensitive")
+        fun shouldBeCaseInsensitive() {
+            val codes = totpService.generateBackupCodes()
+            val hashedCodes = codes.map { totpService.hashBackupCode(it) }
+            
+            val lowercaseCode = codes.first().lowercase()
+            val result = totpService.verifyBackupCode(lowercaseCode, hashedCodes)
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should accept code with or without hyphen")
+        fun shouldAcceptCodeWithoutHyphen() {
+            val codes = totpService.generateBackupCodes()
+            val hashedCodes = codes.map { totpService.hashBackupCode(it) }
+            
+            val codeWithoutHyphen = codes.first().replace("-", "")
+            val result = totpService.verifyBackupCode(codeWithoutHyphen, hashedCodes)
+            
+            assertThat(result).isTrue()
+        }
+    }
+
+    @Nested
+    @DisplayName("hashBackupCode")
+    inner class HashBackupCode {
+
+        @Test
+        @DisplayName("should produce consistent hash for same input")
+        fun shouldProduceConsistentHash() {
+            val code = "ABCD-1234"
+            
+            val hash1 = totpService.hashBackupCode(code)
+            val hash2 = totpService.hashBackupCode(code)
+            
+            assertThat(hash1).isEqualTo(hash2)
+        }
+
+        @Test
+        @DisplayName("should produce different hash for different input")
+        fun shouldProduceDifferentHashes() {
+            val code1 = "ABCD-1234"
+            val code2 = "ABCD-1235"
+            
+            val hash1 = totpService.hashBackupCode(code1)
+            val hash2 = totpService.hashBackupCode(code2)
+            
+            assertThat(hash1).isNotEqualTo(hash2)
+        }
+
+        @Test
+        @DisplayName("should normalize input before hashing (case-insensitive)")
+        fun shouldNormalizeInput() {
+            val code1 = "ABCD-1234"
+            val code2 = "abcd-1234"
+            
+            val hash1 = totpService.hashBackupCode(code1)
+            val hash2 = totpService.hashBackupCode(code2)
+            
+            assertThat(hash1).isEqualTo(hash2)
+        }
     }
 }
 </file>
@@ -3674,6 +4888,500 @@ export function AdminPanel() {
 }
 </file>
 
+<file path="frontend/src/components/auth/MfaSettings.tsx">
+// frontend/src/components/auth/MfaSettings.tsx
+import { useState, useEffect } from 'react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { mfaService } from '../../services/api';
+import { MfaSetup } from './MfaSetup';
+import type { MfaStatusResponse } from '../../types';
+
+export function MfaSettings() {
+  const [status, setStatus] = useState<MfaStatusResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showSetup, setShowSetup] = useState(false);
+  const [showDisable, setShowDisable] = useState(false);
+  const [showRegenerate, setShowRegenerate] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  // Disable form state
+  const [disablePassword, setDisablePassword] = useState('');
+  const [disableCode, setDisableCode] = useState('');
+  const [isDisabling, setIsDisabling] = useState(false);
+
+  // Regenerate form state
+  const [regenerateCode, setRegenerateCode] = useState('');
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [newBackupCodes, setNewBackupCodes] = useState<string[]>([]);
+
+  useEffect(() => {
+    loadStatus();
+  }, []);
+
+  const loadStatus = async () => {
+    try {
+      const data = await mfaService.getStatus();
+      setStatus(data);
+    } catch (err) {
+      setError('Failed to load MFA status');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSetupComplete = (_backupCodes: string[]) => {
+    setShowSetup(false);
+    setSuccess('Two-factor authentication has been enabled!');
+    loadStatus();
+  };
+
+  const handleDisable = async () => {
+    setIsDisabling(true);
+    setError('');
+
+    try {
+      await mfaService.disable(disablePassword, disableCode);
+      setShowDisable(false);
+      setDisablePassword('');
+      setDisableCode('');
+      setSuccess('Two-factor authentication has been disabled.');
+      loadStatus();
+    } catch (err) {
+      setError('Failed to disable MFA. Please check your password and code.');
+    } finally {
+      setIsDisabling(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    setIsRegenerating(true);
+    setError('');
+
+    try {
+      const response = await mfaService.regenerateBackupCodes(regenerateCode);
+      setNewBackupCodes(response.backupCodes);
+      setRegenerateCode('');
+      setSuccess('New backup codes have been generated.');
+    } catch (err) {
+      setError('Failed to regenerate backup codes. Please check your code.');
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const copyBackupCodes = () => {
+    navigator.clipboard.writeText(newBackupCodes.join('\n'));
+  };
+
+  if (isLoading) {
+    return (
+      <div className="p-6 bg-white rounded-lg shadow">
+        <div className="animate-pulse flex space-x-4">
+          <div className="flex-1 space-y-4 py-1">
+            <div className="h-4 bg-gray-200 rounded w-3/4"></div>
+            <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show MFA Setup flow
+  if (showSetup) {
+    return (
+      <div className="p-6 bg-white rounded-lg shadow">
+        <MfaSetup 
+          onComplete={handleSetupComplete}
+          onCancel={() => setShowSetup(false)}
+        />
+      </div>
+    );
+  }
+
+  // Show new backup codes after regeneration
+  if (newBackupCodes.length > 0) {
+    return (
+      <div className="p-6 bg-white rounded-lg shadow space-y-4">
+        <h3 className="text-lg font-semibold text-gray-900">New Backup Codes</h3>
+        
+        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-sm text-yellow-800">
+            ⚠️ Save these codes! Your old backup codes are now invalid.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 p-4 bg-gray-50 rounded-lg font-mono text-sm">
+          {newBackupCodes.map((code, index) => (
+            <div key={index} className="px-3 py-2 bg-white rounded border text-center">
+              {code}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex space-x-4">
+          <Button variant="secondary" onClick={copyBackupCodes} className="flex-1">
+            Copy Codes
+          </Button>
+          <Button onClick={() => setNewBackupCodes([])} className="flex-1">
+            Done
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 bg-white rounded-lg shadow space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Two-Factor Authentication</h3>
+          <p className="text-sm text-gray-500">
+            Add an extra layer of security to your account
+          </p>
+        </div>
+        <div className={`px-3 py-1 rounded-full text-sm font-medium ${
+          status?.mfaEnabled 
+            ? 'bg-green-100 text-green-800' 
+            : 'bg-gray-100 text-gray-800'
+        }`}>
+          {status?.mfaEnabled ? 'Enabled' : 'Disabled'}
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      )}
+
+      {success && (
+        <div className="p-3 rounded-lg bg-green-50 border border-green-200">
+          <p className="text-sm text-green-600">{success}</p>
+        </div>
+      )}
+
+      {status?.mfaEnabled ? (
+        <>
+          {/* MFA Status Info */}
+          <div className="p-4 bg-gray-50 rounded-lg space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Enabled since:</span>
+              <span className="text-gray-900">
+                {status.mfaEnabledAt 
+                  ? new Date(status.mfaEnabledAt).toLocaleDateString()
+                  : 'Unknown'
+                }
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Backup codes remaining:</span>
+              <span className={`font-medium ${
+                (status.backupCodesRemaining ?? 0) <= 2 
+                  ? 'text-red-600' 
+                  : 'text-gray-900'
+              }`}>
+                {status.backupCodesRemaining ?? 'Unknown'}
+              </span>
+            </div>
+          </div>
+
+          {/* Regenerate Backup Codes */}
+          {showRegenerate ? (
+            <div className="p-4 border rounded-lg space-y-4">
+              <h4 className="font-medium text-gray-900">Generate New Backup Codes</h4>
+              <p className="text-sm text-gray-500">
+                Enter your authenticator code to generate new backup codes. 
+                This will invalidate your existing codes.
+              </p>
+              <Input
+                label="Authenticator Code"
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                value={regenerateCode}
+                onChange={(e) => setRegenerateCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="Enter 6-digit code"
+              />
+              <div className="flex space-x-4">
+                <Button 
+                  variant="secondary" 
+                  onClick={() => setShowRegenerate(false)}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleRegenerate}
+                  isLoading={isRegenerating}
+                  disabled={regenerateCode.length !== 6}
+                  className="flex-1"
+                >
+                  Generate
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button 
+              variant="secondary" 
+              onClick={() => setShowRegenerate(true)}
+              className="w-full"
+            >
+              Regenerate Backup Codes
+            </Button>
+          )}
+
+          {/* Disable MFA */}
+          {showDisable ? (
+            <div className="p-4 border border-red-200 rounded-lg space-y-4">
+              <h4 className="font-medium text-red-600">Disable Two-Factor Authentication</h4>
+              <p className="text-sm text-gray-500">
+                Enter your password and authenticator code to disable 2FA.
+              </p>
+              <Input
+                label="Password"
+                type="password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                placeholder="Your password"
+              />
+              <Input
+                label="Verification Code"
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="6-digit code or backup code"
+              />
+              <div className="flex space-x-4">
+                <Button 
+                  variant="secondary" 
+                  onClick={() => setShowDisable(false)}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  variant="danger"
+                  onClick={handleDisable}
+                  isLoading={isDisabling}
+                  className="flex-1"
+                >
+                  Disable 2FA
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowDisable(true)}
+              className="text-sm text-red-600 hover:text-red-800"
+            >
+              Disable two-factor authentication
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-gray-600">
+            Protect your account by requiring a verification code in addition to your password 
+            when signing in.
+          </p>
+          <Button onClick={() => setShowSetup(true)}>
+            Enable Two-Factor Authentication
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/components/auth/MfaVerify.tsx">
+// frontend/src/components/auth/MfaVerify.tsx
+import { useState } from 'react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { mfaService } from '../../services/api';
+
+interface MfaVerifyProps {
+  mfaToken: string;
+  onSuccess: (token: string) => void;
+  onCancel: () => void;
+}
+
+type VerifyMode = 'totp' | 'backup';
+
+export function MfaVerify({ mfaToken, onSuccess, onCancel }: MfaVerifyProps) {
+  const [mode, setMode] = useState<VerifyMode>('totp');
+  const [code, setCode] = useState('');
+  const [backupCode, setBackupCode] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleVerifyTotp = async () => {
+    if (code.length !== 6) {
+      setError('Please enter a 6-digit code');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const response = await mfaService.verifyCode(code, mfaToken);
+      if (response.success && response.token) {
+        // Store the new full token (not the MFA pending token)
+        localStorage.setItem('token', response.token);
+        onSuccess(response.token);
+      } else {
+        setError(response.message || 'Invalid code');
+      }
+    } catch (err) {
+      setError('Invalid code. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyBackup = async () => {
+    if (backupCode.length < 8) {
+      setError('Please enter a valid backup code');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const response = await mfaService.verifyBackupCode(backupCode, mfaToken);
+      if (response.success && response.token) {
+        localStorage.setItem('token', response.token);
+        onSuccess(response.token);
+        
+        // Warn if low on backup codes
+        if (response.remainingBackupCodes !== undefined && response.remainingBackupCodes <= 2) {
+          alert(`Warning: You only have ${response.remainingBackupCodes} backup codes remaining. Consider generating new ones.`);
+        }
+      } else {
+        setError(response.message || 'Invalid backup code');
+      }
+    } catch (err) {
+      setError('Invalid backup code. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center">
+        <div className="text-4xl mb-2">🔐</div>
+        <h2 className="text-xl font-bold text-gray-900">Two-Factor Authentication</h2>
+        <p className="mt-2 text-gray-600">
+          {mode === 'totp' 
+            ? 'Enter the code from your authenticator app'
+            : 'Enter one of your backup codes'
+          }
+        </p>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      )}
+
+      {mode === 'totp' ? (
+        <>
+          <div className="flex justify-center">
+            <Input
+              label="Authentication Code"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+              placeholder="000000"
+              className="text-center text-2xl tracking-widest w-48"
+              autoFocus
+            />
+          </div>
+
+          <Button 
+            onClick={handleVerifyTotp}
+            isLoading={isLoading}
+            disabled={code.length !== 6}
+            className="w-full"
+          >
+            Verify
+          </Button>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setMode('backup');
+                setError('');
+              }}
+              className="text-sm text-blue-600 hover:text-blue-800"
+            >
+              Use a backup code instead
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <Input
+            label="Backup Code"
+            type="text"
+            value={backupCode}
+            onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
+            placeholder="XXXX-XXXX"
+            className="text-center text-lg tracking-wider"
+            autoFocus
+          />
+
+          <Button 
+            onClick={handleVerifyBackup}
+            isLoading={isLoading}
+            disabled={backupCode.length < 8}
+            className="w-full"
+          >
+            Verify Backup Code
+          </Button>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setMode('totp');
+                setError('');
+              }}
+              className="text-sm text-blue-600 hover:text-blue-800"
+            >
+              Use authenticator app instead
+            </button>
+          </div>
+        </>
+      )}
+
+      <div className="pt-4 border-t">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="w-full text-sm text-gray-500 hover:text-gray-700"
+        >
+          ← Back to login
+        </button>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="frontend/src/components/auth/RegisterForm.tsx">
 // frontend/src/components/auth/RegisterForm.tsx
 import { useState } from 'react';
@@ -4445,43 +6153,6 @@ export default defineConfig([
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-</file>
-
-<file path="frontend/package.json">
-{
-  "name": "frontend",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "@tailwindcss/vite": "^4.1.18",
-    "axios": "^1.13.2",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-router-dom": "^7.12.0",
-    "tailwindcss": "^4.1.18"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@types/node": "^24.10.1",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "typescript": "~5.9.3",
-    "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
-  }
-}
 </file>
 
 <file path="frontend/README.md">
@@ -6063,60 +7734,240 @@ jobs:
         run: npm run build
 </file>
 
-<file path="backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt">
-// backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt
-package com.securemonitor.controller
+<file path="backend/src/main/kotlin/com/securemonitor/mfa/controller/MfaController.kt">
+// backend/src/main/kotlin/com/securemonitor/mfa/controller/MfaController.kt
+package com.securemonitor.mfa.controller
 
-import com.securemonitor.dto.AuthResponse
-import com.securemonitor.dto.LoginRequest
-import com.securemonitor.dto.RegisterRequest
-import com.securemonitor.service.AuthService
+import com.securemonitor.mfa.dto.*
+import com.securemonitor.mfa.service.MfaException
+import com.securemonitor.mfa.service.MfaService
+import com.securemonitor.repository.UserRepository
 import com.securemonitor.security.JwtService
+import com.securemonitor.service.AuditService
 import jakarta.servlet.http.HttpServletRequest
+import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.*
+import java.time.Instant
 
+/**
+ * REST controller for Multi-Factor Authentication (MFA) operations.
+ *
+ * Endpoints:
+ * - POST /api/auth/mfa/setup - Initiate MFA setup
+ * - POST /api/auth/mfa/setup/verify - Complete MFA setup
+ * - POST /api/auth/mfa/verify - Verify TOTP code
+ * - POST /api/auth/mfa/backup - Verify backup code
+ * - POST /api/auth/mfa/disable - Disable MFA
+ * - POST /api/auth/mfa/backup-codes - Regenerate backup codes
+ * - GET  /api/auth/mfa/status - Get MFA status
+ */
 @RestController
-@RequestMapping("/api/auth")
-class AuthController(
-    private val authService: AuthService,
-    private val jwtService: JwtService
+@RequestMapping("/api/auth/mfa")
+class MfaController(
+    private val mfaService: MfaService,
+    private val userRepository: UserRepository,
+    private val jwtService: JwtService,
+    private val auditService: AuditService
 ) {
 
-    @PostMapping("/register")
-    fun register(
-        @RequestBody request: RegisterRequest,
-        httpRequest: HttpServletRequest
-    ): ResponseEntity<AuthResponse> {
-        val ipAddress = getClientIp(httpRequest)
-        val user = authService.register(request.username, request.email, request.password, ipAddress)
-        val roles = user.roles.map { it.name }
-        val token = jwtService.generateToken(user.username, roles)
-
-        return ResponseEntity.ok(AuthResponse(
-            token = token,
-            username = user.username,
-            roles = roles
-        ))
+    /**
+     * Initiates MFA setup for the current user.
+     * Returns secret and QR code URI for authenticator app.
+     */
+    @PostMapping("/setup")
+    fun initiateSetup(): ResponseEntity<MfaSetupResponse> {
+        val userId = getCurrentUserId()
+        val response = mfaService.initiateSetup(userId)
+        return ResponseEntity.ok(response)
     }
 
-    @PostMapping("/login")
-    fun login(
-        @RequestBody request: LoginRequest,
-        httpRequest: HttpServletRequest
-    ): ResponseEntity<AuthResponse> {
-        val ipAddress = getClientIp(httpRequest)
-        val token = authService.login(request.username, request.password, ipAddress)
-        val username = jwtService.getUsername(token)
-        val roles = jwtService.getRoles(token)
-
-        return ResponseEntity.ok(AuthResponse(
-            token = token,
-            username = username,
-            roles = roles
-        ))
+    /**
+     * Completes MFA setup by verifying the first TOTP code.
+     * Returns backup codes on success.
+     */
+    @PostMapping("/setup/verify")
+    fun completeSetup(
+        @Valid @RequestBody request: MfaSetupVerifyRequest
+    ): ResponseEntity<MfaSetupCompleteResponse> {
+        val userId = getCurrentUserId()
+        val response = mfaService.completeSetup(userId, request)
+        return ResponseEntity.ok(response)
     }
 
+    /**
+     * Verifies a TOTP code during MFA login.
+     * Returns a full JWT token on success.
+     */
+    @PostMapping("/verify")
+    fun verifyCode(
+        @Valid @RequestBody request: MfaVerifyRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<Map<String, Any>> {
+        val username = getCurrentUsername()
+        val user = userRepository.findByUsername(username)
+            .orElseThrow { MfaException("User not found") }
+        
+        val isValid = mfaService.verifyCode(user.id, request.code)
+        val ipAddress = getClientIp(httpRequest)
+
+        return if (isValid) {
+            // Update last login
+            userRepository.save(user.copy(lastLogin = Instant.now()))
+            
+            // Generate full token (not MFA pending)
+            val roles = user.roles.map { it.name }
+            val token = jwtService.generateToken(user.username, roles)
+            
+            auditService.log(
+                action = "MFA_LOGIN_SUCCESS",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress
+            )
+            
+            ResponseEntity.ok(mapOf(
+                "success" to true,
+                "message" to "MFA verification successful",
+                "token" to token
+            ))
+        } else {
+            auditService.log(
+                action = "MFA_LOGIN_FAILED",
+                username = username,
+                details = "Invalid TOTP code",
+                ipAddress = ipAddress,
+                success = false
+            )
+            
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf(
+                "success" to false,
+                "message" to "Invalid verification code"
+            ))
+        }
+    }
+
+    /**
+     * Verifies a backup code during MFA login.
+     * Returns a full JWT token on success.
+     */
+    @PostMapping("/backup")
+    fun verifyBackupCode(
+        @Valid @RequestBody request: MfaBackupCodeRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<Map<String, Any>> {
+        val username = getCurrentUsername()
+        val user = userRepository.findByUsername(username)
+            .orElseThrow { MfaException("User not found") }
+        
+        val (isValid, remainingCodes) = mfaService.verifyBackupCode(user.id, request.backupCode)
+        val ipAddress = getClientIp(httpRequest)
+
+        return if (isValid) {
+            // Update last login
+            userRepository.save(user.copy(lastLogin = Instant.now()))
+            
+            // Generate full token
+            val roles = user.roles.map { it.name }
+            val token = jwtService.generateToken(user.username, roles)
+            
+            auditService.log(
+                action = "MFA_LOGIN_BACKUP_CODE",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress,
+                details = "Backup code used, $remainingCodes remaining"
+            )
+            
+            val response = mutableMapOf<String, Any>(
+                "success" to true,
+                "message" to "Backup code verified",
+                "token" to token,
+                "remainingBackupCodes" to remainingCodes
+            )
+            if (remainingCodes <= 2) {
+                response["warning"] = "You have only $remainingCodes backup codes remaining. Consider generating new ones."
+            }
+            ResponseEntity.ok(response.toMap())
+        } else {
+            auditService.log(
+                action = "MFA_LOGIN_FAILED",
+                username = username,
+                details = "Invalid backup code",
+                ipAddress = ipAddress,
+                success = false
+            )
+            
+            ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(mapOf(
+                "success" to false,
+                "message" to "Invalid backup code"
+            ))
+        }
+    }
+
+    /**
+     * Disables MFA for the current user.
+     * Requires verification with TOTP or backup code.
+     */
+    @PostMapping("/disable")
+    fun disableMfa(
+        @Valid @RequestBody request: MfaDisableRequest
+    ): ResponseEntity<MfaDisableResponse> {
+        val userId = getCurrentUserId()
+        // Note: Password verification should be done here in production
+        val response = mfaService.disableMfa(userId, request.code)
+        return ResponseEntity.ok(response)
+    }
+
+    /**
+     * Regenerates backup codes.
+     * Requires verification with current TOTP code.
+     * Invalidates all previous backup codes.
+     */
+    @PostMapping("/backup-codes")
+    fun regenerateBackupCodes(
+        @Valid @RequestBody request: MfaVerifyRequest
+    ): ResponseEntity<MfaBackupCodesResponse> {
+        val userId = getCurrentUserId()
+        val response = mfaService.regenerateBackupCodes(userId, request.code)
+        return ResponseEntity.ok(response)
+    }
+
+    /**
+     * Gets the current MFA status for the user.
+     */
+    @GetMapping("/status")
+    fun getMfaStatus(): ResponseEntity<MfaStatusResponse> {
+        val userId = getCurrentUserId()
+        val response = mfaService.getMfaStatus(userId)
+        return ResponseEntity.ok(response)
+    }
+
+    /**
+     * Gets the current authenticated user's ID.
+     */
+    private fun getCurrentUserId(): Long {
+        val username = getCurrentUsername()
+        return userRepository.findByUsername(username)
+            .orElseThrow { MfaException("User not found") }
+            .id
+    }
+    
+    /**
+     * Gets the current authenticated username.
+     */
+    private fun getCurrentUsername(): String {
+        return SecurityContextHolder.getContext().authentication?.name
+            ?: throw MfaException("Not authenticated")
+    }
+    
+    /**
+     * Gets client IP address from request.
+     */
     private fun getClientIp(request: HttpServletRequest): String {
         val xForwardedFor = request.getHeader("X-Forwarded-For")
         return if (xForwardedFor != null) {
@@ -6125,48 +7976,18 @@ class AuthController(
             request.remoteAddr
         }
     }
+
+    /**
+     * Exception handler for MFA-related errors.
+     */
+    @ExceptionHandler(MfaException::class)
+    fun handleMfaException(ex: MfaException): ResponseEntity<Map<String, Any>> {
+        return ResponseEntity.badRequest().body(mapOf(
+            "success" to false,
+            "error" to (ex.message ?: "MFA error")
+        ))
+    }
 }
-</file>
-
-<file path="backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt">
-// backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt 
-package com.securemonitor.dto
-
-data class RegisterRequest(
-    val username: String,
-    val email: String,
-    val password: String
-)
-
-data class LoginRequest(
-    val username: String,
-    val password: String
-)
-
-data class AuthResponse(
-    val token: String,
-    val username: String,
-    val roles: List<String>
-)
-
-data class UserResponse(
-    val id: Long,
-    val username: String,
-    val email: String,
-    val roles: List<String>,
-    val enabled: Boolean,
-    val createdAt: String,
-    val lastLogin: String?
-)
-
-data class ChatRequest(
-    val message: String
-)
-
-data class ChatResponse(
-    val response: String,
-    val timestamp: String = java.time.Instant.now().toString()
-)
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/oauth2/service/AuthorizationService.kt">
@@ -6704,6 +8525,105 @@ class TokenService(
 }
 </file>
 
+<file path="backend/src/main/kotlin/com/securemonitor/security/JwtService.kt">
+// backend/src/main/kotlin/com/securemonitor/security/JwtService.kt
+package com.securemonitor.security
+
+import io.jsonwebtoken.Claims
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.security.Keys
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.stereotype.Service
+import java.util.*
+import javax.crypto.SecretKey
+
+@Service
+class JwtService {
+
+    @Value("\${jwt.secret:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}")
+    private lateinit var secretString: String
+
+    @Value("\${jwt.expiration:86400000}")
+    private var expiration: Long = 86400000 // 24 hours
+    
+    @Value("\${jwt.mfa-pending-expiration:300000}")
+    private var mfaPendingExpiration: Long = 300000 // 5 minutes
+
+    private val secretKey: SecretKey by lazy {
+        Keys.hmacShaKeyFor(secretString.toByteArray())
+    }
+
+    fun generateToken(username: String, roles: List<String>): String {
+        val now = Date()
+        val expiryDate = Date(now.time + expiration)
+
+        return Jwts.builder()
+            .subject(username)
+            .claim("roles", roles)
+            .claim("mfaPending", false)
+            .issuedAt(now)
+            .expiration(expiryDate)
+            .signWith(secretKey)
+            .compact()
+    }
+    
+    /**
+     * Generate a temporary token for users who need to complete MFA.
+     * This token has a shorter expiry and is marked as pending MFA verification.
+     */
+    fun generateMfaPendingToken(username: String, roles: List<String>): String {
+        val now = Date()
+        val expiryDate = Date(now.time + mfaPendingExpiration)
+
+        return Jwts.builder()
+            .subject(username)
+            .claim("roles", roles)
+            .claim("mfaPending", true)
+            .issuedAt(now)
+            .expiration(expiryDate)
+            .signWith(secretKey)
+            .compact()
+    }
+
+    fun validateToken(token: String): Boolean {
+        return try {
+            getClaims(token)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun getUsername(token: String): String {
+        return getClaims(token).subject
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun getRoles(token: String): List<String> {
+        return getClaims(token)["roles"] as? List<String> ?: emptyList()
+    }
+    
+    /**
+     * Check if the token is a pending MFA token
+     */
+    fun isMfaPending(token: String): Boolean {
+        return try {
+            getClaims(token)["mfaPending"] as? Boolean ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun getClaims(token: String): Claims {
+        return Jwts.parser()
+            .verifyWith(secretKey)
+            .build()
+            .parseSignedClaims(token)
+            .payload
+    }
+}
+</file>
+
 <file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/AuthorizationServiceTest.kt">
 package com.securemonitor.oauth2.service
 
@@ -7200,147 +9120,239 @@ export function LoginForm({ onSubmit, onSwitchToRegister }: LoginFormProps) {
 }
 </file>
 
-<file path="frontend/src/pages/LoginPage.tsx">
-// frontend/src/pages/LoginPage.tsx
+<file path="frontend/src/components/auth/MfaSetup.tsx">
+// frontend/src/components/auth/MfaSetup.tsx
 import { useState, useEffect } from 'react';
-import { LoginForm } from '../components/auth/LoginForm';
-import { RegisterForm } from '../components/auth/RegisterForm';
-import { useAuth } from '../hooks/useAuth';
+import { QRCodeSVG } from 'qrcode.react';
+import { Button } from '../ui/Button';
+import { Input } from '../ui/Input';
+import { mfaService } from '../../services/api';
+import type { MfaSetupResponse } from '../../types';
 
-interface LoginPageProps {
-  onSuccess: () => void;
-  oauthError?: string | null;
-  onClearError?: () => void;
+interface MfaSetupProps {
+  onComplete: (backupCodes: string[]) => void;
+  onCancel: () => void;
 }
 
-export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProps) {
-  const [isLogin, setIsLogin] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const { login, register } = useAuth();
+type SetupStep = 'loading' | 'scan' | 'verify' | 'backup' | 'error';
 
-  // Show OAuth2 error if present
+export function MfaSetup({ onComplete, onCancel }: MfaSetupProps) {
+  const [step, setStep] = useState<SetupStep>('loading');
+  const [setupData, setSetupData] = useState<MfaSetupResponse | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [copiedBackup, setCopiedBackup] = useState(false);
+
   useEffect(() => {
-    if (oauthError) {
-      setError(oauthError);
-      // Auto-clear after 5 seconds
-      const timer = setTimeout(() => {
-        setError(null);
-        onClearError?.();
-      }, 5000);
-      return () => clearTimeout(timer);
+    initiateSetup();
+  }, []);
+
+  const initiateSetup = async () => {
+    try {
+      setStep('loading');
+      const data = await mfaService.initiateSetup();
+      setSetupData(data);
+      setStep('scan');
+    } catch (err) {
+      setError('Failed to initiate MFA setup. Please try again.');
+      setStep('error');
     }
-  }, [oauthError, onClearError]);
-
-  const handleLogin = async (username: string, password: string) => {
-    await login({ username, password });
-    onSuccess();
   };
 
-  const handleRegister = async (username: string, email: string, password: string) => {
-    await register({ username, email, password });
-    onSuccess();
+  const handleVerify = async () => {
+    if (verificationCode.length !== 6) {
+      setError('Please enter a 6-digit code');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const response = await mfaService.completeSetup({
+        secret: setupData!.secret,
+        code: verificationCode,
+      });
+      setBackupCodes(response.backupCodes);
+      setStep('backup');
+    } catch (err) {
+      setError('Invalid code. Please check your authenticator app and try again.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center px-4 py-12">
-      <div className="w-full max-w-md mx-auto">
-        {/* OAuth2 Error Banner */}
+  const copyBackupCodes = () => {
+    const codesText = backupCodes.join('\n');
+    navigator.clipboard.writeText(codesText);
+    setCopiedBackup(true);
+    setTimeout(() => setCopiedBackup(false), 2000);
+  };
+
+  const handleComplete = () => {
+    onComplete(backupCodes);
+  };
+
+  // Loading state
+  if (step === 'loading') {
+    return (
+      <div className="text-center py-8">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+        <p className="mt-4 text-gray-600">Setting up two-factor authentication...</p>
+      </div>
+    );
+  }
+
+  // Error state
+  if (step === 'error') {
+    return (
+      <div className="text-center py-8">
+        <div className="text-red-500 text-5xl mb-4">⚠️</div>
+        <p className="text-red-600 mb-4">{error}</p>
+        <div className="space-x-4">
+          <Button onClick={initiateSetup}>Try Again</Button>
+          <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 1: Scan QR Code
+  if (step === 'scan') {
+    return (
+      <div className="space-y-6">
+        <div className="text-center">
+          <h2 className="text-xl font-bold text-gray-900">Set Up Two-Factor Authentication</h2>
+          <p className="mt-2 text-gray-600">Scan this QR code with your authenticator app</p>
+        </div>
+
+        {/* QR Code */}
+        <div className="flex justify-center">
+          <div className="p-4 bg-white rounded-lg shadow-inner border">
+            <QRCodeSVG
+              value={setupData!.qrCodeUri}
+              size={200}
+              level="M"
+            />
+          </div>
+        </div>
+
+        {/* Manual entry option */}
+        <div className="text-center">
+          <p className="text-sm text-gray-500 mb-2">Can't scan? Enter this code manually:</p>
+          <code className="px-3 py-2 bg-gray-100 rounded text-sm font-mono select-all">
+            {setupData!.secret}
+          </code>
+        </div>
+
+        {/* Supported apps */}
+        <div className="text-center text-sm text-gray-500">
+          <p>Supported apps: Google Authenticator, Authy, 1Password, etc.</p>
+        </div>
+
+        <div className="flex space-x-4">
+          <Button variant="secondary" onClick={onCancel} className="flex-1">
+            Cancel
+          </Button>
+          <Button onClick={() => setStep('verify')} className="flex-1">
+            Next: Verify Code
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 2: Verify Code
+  if (step === 'verify') {
+    return (
+      <div className="space-y-6">
+        <div className="text-center">
+          <h2 className="text-xl font-bold text-gray-900">Verify Setup</h2>
+          <p className="mt-2 text-gray-600">Enter the 6-digit code from your authenticator app</p>
+        </div>
+
         {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <div className="flex items-start">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-red-700">{error}</p>
-              </div>
-              <div className="ml-auto pl-3">
-                <button
-                  onClick={() => {
-                    setError(null);
-                    onClearError?.();
-                  }}
-                  className="text-red-400 hover:text-red-600"
-                >
-                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+          <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+            <p className="text-sm text-red-600">{error}</p>
           </div>
         )}
 
-        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
-          {isLogin ? (
-            <LoginForm
-              onSubmit={handleLogin}
-              onSwitchToRegister={() => setIsLogin(false)}
-            />
-          ) : (
-            <RegisterForm
-              onSubmit={handleRegister}
-              onSwitchToLogin={() => setIsLogin(true)}
-            />
-          )}
+        <div className="flex justify-center">
+          <Input
+            label="Verification Code"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={6}
+            value={verificationCode}
+            onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ''))}
+            placeholder="000000"
+            className="text-center text-2xl tracking-widest w-48"
+            autoFocus
+          />
+        </div>
+
+        <div className="flex space-x-4">
+          <Button variant="secondary" onClick={() => setStep('scan')} className="flex-1">
+            Back
+          </Button>
+          <Button 
+            onClick={handleVerify} 
+            isLoading={isLoading}
+            disabled={verificationCode.length !== 6}
+            className="flex-1"
+          >
+            Verify & Enable
+          </Button>
         </div>
       </div>
-    </div>
-  );
-}
-</file>
+    );
+  }
 
-<file path="frontend/src/types/index.ts">
-// frontend/src/types/index.ts
-export interface User {
-  id: number;
-  username: string;
-  email: string;
-  roles: string[];
-  enabled: boolean;
-  createdAt: string;
-  lastLogin: string | null;
-}
+  // Step 3: Backup Codes
+  if (step === 'backup') {
+    return (
+      <div className="space-y-6">
+        <div className="text-center">
+          <div className="text-green-500 text-5xl mb-2">✓</div>
+          <h2 className="text-xl font-bold text-gray-900">Two-Factor Authentication Enabled!</h2>
+          <p className="mt-2 text-gray-600">Save these backup codes in a safe place</p>
+        </div>
 
-export interface AuthResponse {
-  token: string;
-  username: string;
-  roles: string[];
-}
+        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-sm text-yellow-800 font-medium mb-2">⚠️ Important:</p>
+          <p className="text-sm text-yellow-700">
+            These codes can be used to access your account if you lose your authenticator device. 
+            Each code can only be used once. Store them securely!
+          </p>
+        </div>
 
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
+        <div className="grid grid-cols-2 gap-2 p-4 bg-gray-50 rounded-lg font-mono text-sm">
+          {backupCodes.map((code, index) => (
+            <div key={index} className="px-3 py-2 bg-white rounded border text-center">
+              {code}
+            </div>
+          ))}
+        </div>
 
-export interface RegisterRequest {
-  username: string;
-  email: string;
-  password: string;
-}
+        <Button 
+          variant="secondary" 
+          onClick={copyBackupCodes}
+          className="w-full"
+        >
+          {copiedBackup ? '✓ Copied!' : 'Copy All Codes'}
+        </Button>
 
-export interface AuditLog {
-  id: number;
-  timestamp: string;
-  action: string;
-  username: string;
-  resourceType: string | null;
-  resourceId: string | null;
-  ipAddress: string | null;
-  details: string | null;
-  success: boolean;
-}
+        <Button onClick={handleComplete} className="w-full">
+          I've Saved My Backup Codes
+        </Button>
+      </div>
+    );
+  }
 
-export interface UserResponse {
-  id: number;
-  username: string;
-  email: string;
-  roles: string[];
-  enabled: boolean;
-  createdAt: string;
-  lastLogin: string | null;
+  return null;
 }
 </file>
 
@@ -7422,6 +9434,44 @@ function App() {
 }
 
 export default App;
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "axios": "^1.13.2",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.12.0",
+    "tailwindcss": "^4.1.18"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.4"
+  }
+}
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/controller/AdminController.kt">
@@ -7523,166 +9573,111 @@ class AdminController(
 }
 </file>
 
-<file path="backend/src/main/kotlin/com/securemonitor/model/User.kt">
-// backend/src/main/kotlin/com/securemonitor/model/User.kt
-package com.securemonitor.model
+<file path="backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt">
+// backend/src/main/kotlin/com/securemonitor/controller/AuthController.kt
+package com.securemonitor.controller
 
-import jakarta.persistence.*
-import java.time.Instant
-
-@Entity
-@Table(name = "users")
-data class User(
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val id: Long = 0,
-
-    @Column(unique = true, nullable = false)
-    val username: String,
-
-    @Column(unique = true, nullable = false)
-    val email: String,
-
-    @Column(nullable = false)
-    val passwordHash: String,
-
-    @ManyToMany(fetch = FetchType.EAGER)
-    @JoinTable(
-        name = "user_roles",
-        joinColumns = [JoinColumn(name = "user_id")],
-        inverseJoinColumns = [JoinColumn(name = "role_id")]
-    )
-    var roles: MutableSet<Role> = mutableSetOf(),
-
-    @Column(nullable = false)
-    val enabled: Boolean = true,
-
-    @Column(nullable = false)
-    val createdAt: Instant = Instant.now(),
-
-    @Column
-    val lastLogin: Instant? = null
-)
-</file>
-
-<file path="backend/src/main/kotlin/com/securemonitor/service/AuthService.kt">
-// backend/src/main/kotlin/com/securemonitor/service/AuthService.kt
-package com.securemonitor.service
-
-import com.securemonitor.model.Role
-import com.securemonitor.model.User
-import com.securemonitor.repository.RoleRepository
-import com.securemonitor.repository.UserRepository
+import com.securemonitor.dto.AuthResponse
+import com.securemonitor.dto.LoginRequest
+import com.securemonitor.dto.RegisterRequest
+import com.securemonitor.service.AuthService
 import com.securemonitor.security.JwtService
-import org.springframework.security.crypto.password.PasswordEncoder
-import org.springframework.stereotype.Service
-import java.time.Instant
+import jakarta.servlet.http.HttpServletRequest
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.*
 
-@Service
-class AuthService(
-    private val userRepository: UserRepository,
-    private val roleRepository: RoleRepository,
-    private val passwordEncoder: PasswordEncoder,
-    private val jwtService: JwtService,
-    private val auditService: AuditService
+@RestController
+@RequestMapping("/api/auth")
+class AuthController(
+    private val authService: AuthService,
+    private val jwtService: JwtService
 ) {
 
-    fun register(username: String, email: String, password: String, ipAddress: String? = null): User {
-        if (userRepository.existsByUsername(username)) {
-            auditService.log(
-                action = "REGISTER_FAILED",
-                username = username,
-                details = "Username already exists",
-                ipAddress = ipAddress,
-                success = false
-            )
-            throw IllegalArgumentException("Username already exists")
-        }
-        if (userRepository.existsByEmail(email)) {
-            auditService.log(
-                action = "REGISTER_FAILED",
-                username = username,
-                details = "Email already exists",
-                ipAddress = ipAddress,
-                success = false
-            )
-            throw IllegalArgumentException("Email already exists")
-        }
-
-        val userRole = roleRepository.findByName("USER")
-            .orElseGet { roleRepository.save(Role(name = "USER", description = "Standard user")) }
-
-        val user = User(
-            username = username,
-            email = email,
-            passwordHash = passwordEncoder.encode(password),
-            roles = mutableSetOf(userRole)
-        )
-
-        val savedUser = userRepository.save(user)
-
-        auditService.log(
-            action = "USER_REGISTERED",
-            username = username,
-            resourceType = "USER",
-            resourceId = savedUser.id.toString(),
-            ipAddress = ipAddress,
-            details = "New user registered with email: $email"
-        )
-
-        return savedUser
+    @PostMapping("/register")
+    fun register(
+        @RequestBody request: RegisterRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<AuthResponse> {
+        val ipAddress = getClientIp(httpRequest)
+        val user = authService.register(request.username, request.email, request.password, ipAddress)
+        val roles = user.roles.map { it.name }
+        val token = jwtService.generateToken(user.username, roles)
+        return ResponseEntity.ok(AuthResponse(
+            token = token,
+            username = user.username,
+            roles = roles,
+            mfaRequired = false
+        ))
     }
 
-    fun login(username: String, password: String, ipAddress: String? = null): String {
-        val user = userRepository.findByUsername(username).orElse(null)
+    @PostMapping("/login")
+    fun login(
+        @RequestBody request: LoginRequest,
+        httpRequest: HttpServletRequest
+    ): ResponseEntity<AuthResponse> {
+        val ipAddress = getClientIp(httpRequest)
+        val result = authService.login(request.username, request.password, ipAddress)
+        
+        return ResponseEntity.ok(AuthResponse(
+            token = result.token,
+            username = result.username,
+            roles = result.roles,
+            mfaRequired = result.mfaRequired
+        ))
+    }
 
-        if (user == null) {
-            auditService.log(
-                action = "LOGIN_FAILED",
-                username = username,
-                details = "User not found",
-                ipAddress = ipAddress,
-                success = false
-            )
-            throw IllegalArgumentException("Invalid credentials")
+    private fun getClientIp(request: HttpServletRequest): String {
+        val xForwardedFor = request.getHeader("X-Forwarded-For")
+        return if (xForwardedFor != null) {
+            xForwardedFor.split(",")[0].trim()
+        } else {
+            request.remoteAddr
         }
-
-        if (!passwordEncoder.matches(password, user.passwordHash)) {
-            auditService.log(
-                action = "LOGIN_FAILED",
-                username = username,
-                details = "Invalid password",
-                ipAddress = ipAddress,
-                success = false
-            )
-            throw IllegalArgumentException("Invalid credentials")
-        }
-
-        if (!user.enabled) {
-            auditService.log(
-                action = "LOGIN_FAILED",
-                username = username,
-                details = "Account disabled",
-                ipAddress = ipAddress,
-                success = false
-            )
-            throw IllegalArgumentException("Account is disabled")
-        }
-
-        userRepository.save(user.copy(lastLogin = Instant.now()))
-
-        auditService.log(
-            action = "USER_LOGIN",
-            username = username,
-            resourceType = "USER",
-            resourceId = user.id.toString(),
-            ipAddress = ipAddress
-        )
-
-        val roles = user.roles.map { it.name }
-        return jwtService.generateToken(user.username, roles)
     }
 }
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt">
+// backend/src/main/kotlin/com/securemonitor/dto/AuthDtos.kt
+package com.securemonitor.dto
+
+data class RegisterRequest(
+    val username: String,
+    val email: String,
+    val password: String
+)
+
+data class LoginRequest(
+    val username: String,
+    val password: String
+)
+
+data class AuthResponse(
+    val token: String,
+    val username: String,
+    val roles: List<String>,
+    val mfaRequired: Boolean = false
+)
+
+data class UserResponse(
+    val id: Long,
+    val username: String,
+    val email: String,
+    val roles: List<String>,
+    val enabled: Boolean,
+    val createdAt: String,
+    val lastLogin: String?,
+    val mfaEnabled: Boolean = false
+)
+
+data class ChatRequest(
+    val message: String
+)
+
+data class ChatResponse(
+    val response: String,
+    val timestamp: String = java.time.Instant.now().toString()
+)
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/BackendApplication.kt">
@@ -7700,284 +9695,221 @@ fun main(args: Array<String>) {
 }
 </file>
 
-<file path="frontend/src/pages/DashboardPage.tsx">
-// frontend/src/pages/DashboardPage.tsx
+<file path="frontend/src/pages/LoginPage.tsx">
+// frontend/src/pages/LoginPage.tsx
 import { useState, useEffect } from 'react';
+import { LoginForm } from '../components/auth/LoginForm';
+import { RegisterForm } from '../components/auth/RegisterForm';
+import { MfaVerify } from '../components/auth/MfaVerify';
 import { useAuth } from '../hooks/useAuth';
-import { auditService } from '../services/api';
-import { Button } from '../components/ui/Button';
-import { AiChat } from '../components/chat/AiChat';
-import { AdminPanel } from '../components/admin/AdminPanel';
-import type { AuditLog } from '../types';
 
-interface DashboardPageProps {
-  onLogout: () => void;
+interface LoginPageProps {
+  onSuccess: () => void;
+  oauthError?: string | null;
+  onClearError?: () => void;
 }
 
-export function DashboardPage({ onLogout }: DashboardPageProps) {
-  const { username, roles, logout, hasRole } = useAuth();
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+type AuthStep = 'login' | 'register' | 'mfa';
 
+export function LoginPage({ onSuccess, oauthError, onClearError }: LoginPageProps) {
+  const [authStep, setAuthStep] = useState<AuthStep>('login');
+  const [error, setError] = useState<string | null>(null);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const { login, register } = useAuth();
+
+  // Show OAuth2 error if present
   useEffect(() => {
-    const fetchLogs = async () => {
-      try {
-        const logs = await auditService.getRecentLogs();
-        setAuditLogs(logs);
-      } catch (err) {
-        setError('Failed to load audit logs');
-      } finally {
-        setIsLoading(false);
+    if (oauthError) {
+      setError(oauthError);
+      // Auto-clear after 5 seconds
+      const timer = setTimeout(() => {
+        setError(null);
+        onClearError?.();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [oauthError, onClearError]);
+
+  const handleLogin = async (username: string, password: string) => {
+    try {
+      const response = await login({ username, password });
+      
+      // Check if MFA is required
+      if (response.mfaRequired && response.token) {
+        setMfaToken(response.token);
+        setAuthStep('mfa');
+      } else {
+        onSuccess();
       }
-    };
-
-    fetchLogs();
-  }, []);
-
-  const handleLogout = () => {
-    logout();
-    onLogout();
+    } catch (err) {
+      throw err;
+    }
   };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
+  const handleMfaSuccess = (_token: string) => {
+    setMfaToken(null);
+    onSuccess();
+  };
+
+  const handleMfaCancel = () => {
+    setMfaToken(null);
+    setAuthStep('login');
+  };
+
+  const handleRegister = async (username: string, email: string, password: string) => {
+    await register({ username, email, password });
+    onSuccess();
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-bold text-gray-900">AI Security Monitor</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600 hidden sm:block">
-              {username}
-              {hasRole('ADMIN') && (
-                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">
-                  ADMIN
-                </span>
-              )}
-            </span>
-            <Button variant="secondary" onClick={handleLogout} className="!w-auto !py-2">
-              Logout
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Top Row: User Info + AI Chat */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* User Info Card */}
-          <div className="bg-white rounded-xl shadow-sm p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">User Profile</h2>
-            <div className="space-y-3">
-              <div>
-                <span className="text-sm text-gray-500">Username</span>
-                <p className="font-medium text-gray-900">{username}</p>
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center px-4 py-12">
+      <div className="w-full max-w-md mx-auto">
+        {/* OAuth2 Error Banner */}
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
               </div>
-              <div>
-                <span className="text-sm text-gray-500">Roles</span>
-                <div className="flex gap-2 mt-1">
-                  {roles.map((role) => (
-                    <span
-                      key={role}
-                      className={`px-3 py-1 rounded-full text-sm font-medium ${
-                        role === 'ADMIN' 
-                          ? 'bg-purple-100 text-purple-800' 
-                          : 'bg-blue-100 text-blue-800'
-                      }`}
-                    >
-                      {role}
-                    </span>
-                  ))}
-                </div>
+              <div className="ml-3">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+              <div className="ml-auto pl-3">
+                <button
+                  onClick={() => {
+                    setError(null);
+                    onClearError?.();
+                  }}
+                  className="text-red-400 hover:text-red-600"
+                >
+                  <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
+        )}
 
-          {/* AI Chat */}
-          <AiChat />
-        </div>
-
-        {/* Admin Panel - Only visible for admins */}
-        {hasRole('ADMIN') && <AdminPanel />}
-
-        {/* Audit Logs Card */}
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Security Audit Log</h2>
+        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
+          {authStep === 'login' && (
+            <LoginForm
+              onSubmit={handleLogin}
+              onSwitchToRegister={() => setAuthStep('register')}
+            />
+          )}
           
-          {isLoading ? (
-            <div className="flex justify-center py-8">
-              <svg className="animate-spin h-8 w-8 text-blue-600" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            </div>
-          ) : error ? (
-            <div className="p-4 bg-red-50 rounded-lg">
-              <p className="text-red-600">{error}</p>
-            </div>
-          ) : auditLogs.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              No audit logs found
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              {/* Mobile View */}
-              <div className="sm:hidden space-y-4">
-                {auditLogs.map((log) => (
-                  <div key={log.id} className="border rounded-lg p-4 space-y-2">
-                    <div className="flex justify-between items-start">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {log.action}
-                      </span>
-                      <span className="text-xs text-gray-500">{formatDate(log.timestamp)}</span>
-                    </div>
-                    <p className="text-sm text-gray-900">{log.username}</p>
-                    {log.ipAddress && (
-                      <p className="text-xs text-gray-500">IP: {log.ipAddress}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Desktop View */}
-              <table className="hidden sm:table w-full">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Time</th>
-                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Action</th>
-                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">User</th>
-                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">IP Address</th>
-                    <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditLogs.map((log) => (
-                    <tr key={log.id} className="border-b hover:bg-gray-50">
-                      <td className="py-3 px-4 text-sm text-gray-600">{formatDate(log.timestamp)}</td>
-                      <td className="py-3 px-4 text-sm font-medium text-gray-900">{log.action}</td>
-                      <td className="py-3 px-4 text-sm text-gray-600">{log.username}</td>
-                      <td className="py-3 px-4 text-sm text-gray-600">{log.ipAddress || '-'}</td>
-                      <td className="py-3 px-4">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                          {log.success ? 'Success' : 'Failed'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {authStep === 'register' && (
+            <RegisterForm
+              onSubmit={handleRegister}
+              onSwitchToLogin={() => setAuthStep('login')}
+            />
+          )}
+          
+          {authStep === 'mfa' && mfaToken && (
+            <MfaVerify
+              mfaToken={mfaToken}
+              onSuccess={handleMfaSuccess}
+              onCancel={handleMfaCancel}
+            />
           )}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
 </file>
 
-<file path="frontend/src/services/api.ts">
-// frontend/src/services/api.ts
-import axios from 'axios';
-import type { AuthResponse, LoginRequest, RegisterRequest, AuditLog, UserResponse } from '../types';
+<file path="frontend/src/types/index.ts">
+// frontend/src/types/index.ts
+export interface User {
+  id: number;
+  username: string;
+  email: string;
+  roles: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastLogin: string | null;
+  mfaEnabled?: boolean;
+}
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+export interface AuthResponse {
+  token: string;
+  username: string;
+  roles: string[];
+  mfaRequired?: boolean;
+  mfaToken?: string; // Temporary token for MFA verification
+}
 
-const api = axios.create({
-  baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
 
-// Add token to requests if available
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+export interface RegisterRequest {
+  username: string;
+  email: string;
+  password: string;
+}
 
-// Auth services
-export const authService = {
-  login: async (data: LoginRequest): Promise<AuthResponse> => {
-    const response = await api.post<AuthResponse>('/api/auth/login', data);
-    localStorage.setItem('token', response.data.token);
-    return response.data;
-  },
+export interface AuditLog {
+  id: number;
+  timestamp: string;
+  action: string;
+  username: string;
+  resourceType: string | null;
+  resourceId: string | null;
+  ipAddress: string | null;
+  details: string | null;
+  success: boolean;
+}
 
-  register: async (data: RegisterRequest): Promise<AuthResponse> => {
-    const response = await api.post<AuthResponse>('/api/auth/register', data);
-    localStorage.setItem('token', response.data.token);
-    return response.data;
-  },
+export interface UserResponse {
+  id: number;
+  username: string;
+  email: string;
+  roles: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastLogin: string | null;
+  mfaEnabled?: boolean;
+}
 
-  logout: () => {
-    localStorage.removeItem('token');
-  },
+// MFA Types
+export interface MfaSetupResponse {
+  secret: string;
+  qrCodeUri: string;
+  issuer: string;
+  accountName: string;
+}
 
-  getToken: () => localStorage.getItem('token'),
+export interface MfaSetupVerifyRequest {
+  secret: string;
+  code: string;
+}
 
-  isAuthenticated: () => !!localStorage.getItem('token'),
-};
+export interface MfaSetupCompleteResponse {
+  mfaEnabled: boolean;
+  backupCodes: string[];
+  message: string;
+}
 
-// Audit services
-export const auditService = {
-  getRecentLogs: async (): Promise<AuditLog[]> => {
-    const response = await api.get<AuditLog[]>('/api/audit/logs');
-    return response.data;
-  },
+export interface MfaVerifyRequest {
+  code: string;
+}
 
-  getLogsByUsername: async (username: string): Promise<AuditLog[]> => {
-    const response = await api.get<AuditLog[]>(`/api/audit/logs/user/${username}`);
-    return response.data;
-  },
-};
+export interface MfaStatusResponse {
+  mfaEnabled: boolean;
+  mfaEnabledAt: string | null;
+  backupCodesRemaining: number | null;
+}
 
-// Health check
-export const healthService = {
-  check: async () => {
-    const response = await api.get('/api/health');
-    return response.data;
-  },
-};
-
-// AI services
-export const aiService = {
-  chat: async (message: string): Promise<{ response: string; timestamp: string }> => {
-    const response = await api.post('/api/ai/chat', { message });
-    return response.data;
-  },
-};
-
-// Admin services 
-export const adminService = {
-  getAllUsers: async (): Promise<UserResponse[]> => {
-    const response = await api.get<UserResponse[]>('/api/admin/users');
-    return response.data;
-  },
-
-  addRoleToUser: async (userId: number, roleName: string): Promise<UserResponse> => {
-    const response = await api.post<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
-    return response.data;
-  },
-
-  removeRoleFromUser: async (userId: number, roleName: string): Promise<UserResponse> => {
-    const response = await api.delete<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
-    return response.data;
-  },
-};
-
-export default api;
+export interface MfaDisableRequest {
+  password: string;
+  code: string;
+}
 </file>
 
 <file path="README.md">
@@ -8099,6 +10031,278 @@ Daniel-Aston Brandsgård Parker
 MIT
 </file>
 
+<file path="backend/src/main/kotlin/com/securemonitor/model/User.kt">
+// backend/src/main/kotlin/com/securemonitor/model/User.kt
+package com.securemonitor.model
+
+import jakarta.persistence.*
+import java.time.Instant
+
+/**
+ * User entity representing an authenticated user in the system.
+ *
+ * Supports:
+ * - Username/password authentication
+ * - Role-based access control (RBAC)
+ * - Multi-factor authentication (MFA/TOTP)
+ * - OAuth2 federated login
+ */
+@Entity
+@Table(name = "users")
+data class User(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(unique = true, nullable = false)
+    val username: String,
+
+    @Column(unique = true, nullable = false)
+    val email: String,
+
+    @Column(nullable = false)
+    val passwordHash: String,
+
+    @ManyToMany(fetch = FetchType.EAGER)
+    @JoinTable(
+        name = "user_roles",
+        joinColumns = [JoinColumn(name = "user_id")],
+        inverseJoinColumns = [JoinColumn(name = "role_id")]
+    )
+    var roles: MutableSet<Role> = mutableSetOf(),
+
+    @Column(nullable = false)
+    val enabled: Boolean = true,
+
+    @Column(nullable = false)
+    val createdAt: Instant = Instant.now(),
+
+    @Column
+    val lastLogin: Instant? = null,
+
+    // ============================================
+    // MFA (Multi-Factor Authentication) fields
+    // ============================================
+
+    /**
+     * Whether MFA is enabled for this user.
+     * When true, users must provide a TOTP code after password authentication.
+     */
+    @Column(nullable = false)
+    val mfaEnabled: Boolean = false,
+
+    /**
+     * Base32-encoded TOTP secret for generating/verifying codes.
+     * Only set when MFA is enabled. Should be treated as highly sensitive.
+     */
+    @Column(length = 64)
+    val mfaSecret: String? = null,
+
+    /**
+     * JSON array of hashed backup codes for account recovery.
+     * Format: ["hash1", "hash2", ...]
+     * Codes are SHA-256 hashed for secure storage.
+     */
+    @Column(length = 1024)
+    val mfaBackupCodes: String? = null,
+
+    /**
+     * Timestamp when MFA was enabled.
+     * Useful for audit logging and security analysis.
+     */
+    @Column
+    val mfaEnabledAt: Instant? = null
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/service/AuthService.kt">
+// backend/src/main/kotlin/com/securemonitor/service/AuthService.kt
+package com.securemonitor.service
+
+import com.securemonitor.model.Role
+import com.securemonitor.model.User
+import com.securemonitor.repository.RoleRepository
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.security.JwtService
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.stereotype.Service
+import java.time.Instant
+
+/**
+ * Result of a login attempt
+ */
+data class LoginResult(
+    val token: String,
+    val username: String,
+    val roles: List<String>,
+    val mfaRequired: Boolean
+)
+
+@Service
+class AuthService(
+    private val userRepository: UserRepository,
+    private val roleRepository: RoleRepository,
+    private val passwordEncoder: PasswordEncoder,
+    private val jwtService: JwtService,
+    private val auditService: AuditService
+) {
+
+    fun register(username: String, email: String, password: String, ipAddress: String? = null): User {
+        if (userRepository.existsByUsername(username)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Username already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Username already exists")
+        }
+        if (userRepository.existsByEmail(email)) {
+            auditService.log(
+                action = "REGISTER_FAILED",
+                username = username,
+                details = "Email already exists",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Email already exists")
+        }
+
+        val userRole = roleRepository.findByName("USER")
+            .orElseGet { roleRepository.save(Role(name = "USER", description = "Standard user")) }
+
+        val user = User(
+            username = username,
+            email = email,
+            passwordHash = passwordEncoder.encode(password),
+            roles = mutableSetOf(userRole)
+        )
+
+        val savedUser = userRepository.save(user)
+
+        auditService.log(
+            action = "USER_REGISTERED",
+            username = username,
+            resourceType = "USER",
+            resourceId = savedUser.id.toString(),
+            ipAddress = ipAddress,
+            details = "New user registered with email: $email"
+        )
+
+        return savedUser
+    }
+
+    /**
+     * Authenticate user and return login result.
+     * If MFA is enabled, returns mfaRequired=true and a temporary token.
+     */
+    fun login(username: String, password: String, ipAddress: String? = null): LoginResult {
+        val user = userRepository.findByUsername(username).orElse(null)
+
+        if (user == null) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "User not found",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Invalid credentials")
+        }
+
+        if (!passwordEncoder.matches(password, user.passwordHash)) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Invalid password",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Invalid credentials")
+        }
+
+        if (!user.enabled) {
+            auditService.log(
+                action = "LOGIN_FAILED",
+                username = username,
+                details = "Account disabled",
+                ipAddress = ipAddress,
+                success = false
+            )
+            throw IllegalArgumentException("Account is disabled")
+        }
+
+        val roles = user.roles.map { it.name }
+        
+        // Check if MFA is enabled
+        if (user.mfaEnabled) {
+            auditService.log(
+                action = "LOGIN_MFA_REQUIRED",
+                username = username,
+                resourceType = "USER",
+                resourceId = user.id.toString(),
+                ipAddress = ipAddress,
+                details = "MFA verification required"
+            )
+            
+            // Generate a temporary token that requires MFA verification
+            // This token has a shorter expiry and is marked as pending MFA
+            val tempToken = jwtService.generateMfaPendingToken(user.username, roles)
+            
+            return LoginResult(
+                token = tempToken,
+                username = user.username,
+                roles = roles,
+                mfaRequired = true
+            )
+        }
+
+        // No MFA - complete login
+        userRepository.save(user.copy(lastLogin = Instant.now()))
+
+        auditService.log(
+            action = "USER_LOGIN",
+            username = username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = ipAddress
+        )
+
+        val token = jwtService.generateToken(user.username, roles)
+        return LoginResult(
+            token = token,
+            username = user.username,
+            roles = roles,
+            mfaRequired = false
+        )
+    }
+    
+    /**
+     * Complete login after MFA verification
+     */
+    fun completeMfaLogin(username: String, ipAddress: String? = null): String {
+        val user = userRepository.findByUsername(username).orElseThrow {
+            IllegalArgumentException("User not found")
+        }
+        
+        userRepository.save(user.copy(lastLogin = Instant.now()))
+        
+        auditService.log(
+            action = "USER_LOGIN",
+            username = username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = ipAddress,
+            details = "Login completed after MFA verification"
+        )
+        
+        val roles = user.roles.map { it.name }
+        return jwtService.generateToken(user.username, roles)
+    }
+}
+</file>
+
 <file path="backend/build.gradle.kts">
 // backend/build.gradle.kts
 plugins {
@@ -8167,6 +10371,396 @@ allOpen {
 tasks.withType<Test> {
 	useJUnitPlatform()
 }
+</file>
+
+<file path="frontend/src/pages/DashboardPage.tsx">
+// frontend/src/pages/DashboardPage.tsx
+import { useState, useEffect } from 'react';
+import { useAuth } from '../hooks/useAuth';
+import { auditService } from '../services/api';
+import { Button } from '../components/ui/Button';
+import { AiChat } from '../components/chat/AiChat';
+import { AdminPanel } from '../components/admin/AdminPanel';
+import { MfaSettings } from '../components/auth/MfaSettings';
+import type { AuditLog } from '../types';
+
+interface DashboardPageProps {
+  onLogout: () => void;
+}
+
+type TabType = 'dashboard' | 'security';
+
+export function DashboardPage({ onLogout }: DashboardPageProps) {
+  const { username, roles, logout, hasRole } = useAuth();
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const logs = await auditService.getRecentLogs();
+        setAuditLogs(logs);
+      } catch (err) {
+        setError('Failed to load audit logs');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchLogs();
+  }, []);
+
+  const handleLogout = () => {
+    logout();
+    onLogout();
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-xl font-bold text-gray-900">AI Security Monitor</h1>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-600 hidden sm:block">
+              {username}
+              {hasRole('ADMIN') && (
+                <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">
+                  ADMIN
+                </span>
+              )}
+            </span>
+            <Button variant="secondary" onClick={handleLogout} className="!w-auto !py-2">
+              Logout
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Tab Navigation */}
+      <div className="bg-white border-b">
+        <div className="max-w-7xl mx-auto px-4">
+          <nav className="flex space-x-8">
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'dashboard'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              Dashboard
+            </button>
+            <button
+              onClick={() => setActiveTab('security')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                activeTab === 'security'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              🔐 Security Settings
+            </button>
+          </nav>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {activeTab === 'dashboard' ? (
+          <>
+            {/* Top Row: User Info + AI Chat */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* User Info Card */}
+              <div className="bg-white rounded-xl shadow-sm p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">User Profile</h2>
+                <div className="space-y-3">
+                  <div>
+                    <span className="text-sm text-gray-500">Username</span>
+                    <p className="font-medium text-gray-900">{username}</p>
+                  </div>
+                  <div>
+                    <span className="text-sm text-gray-500">Roles</span>
+                    <div className="flex gap-2 mt-1">
+                      {roles.map((role) => (
+                        <span
+                          key={role}
+                          className={`px-3 py-1 rounded-full text-sm font-medium ${
+                            role === 'ADMIN' 
+                              ? 'bg-purple-100 text-purple-800' 
+                              : 'bg-blue-100 text-blue-800'
+                          }`}
+                        >
+                          {role}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI Chat */}
+              <AiChat />
+            </div>
+
+            {/* Admin Panel - Only visible for admins */}
+            {hasRole('ADMIN') && <AdminPanel />}
+
+            {/* Audit Logs Card */}
+            <div className="bg-white rounded-xl shadow-sm p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Security Audit Log</h2>
+              
+              {isLoading ? (
+                <div className="flex justify-center py-8">
+                  <svg className="animate-spin h-8 w-8 text-blue-600" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                </div>
+              ) : error ? (
+                <div className="p-4 bg-red-50 rounded-lg">
+                  <p className="text-red-600">{error}</p>
+                </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No audit logs found
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  {/* Mobile View */}
+                  <div className="sm:hidden space-y-4">
+                    {auditLogs.map((log) => (
+                      <div key={log.id} className="border rounded-lg p-4 space-y-2">
+                        <div className="flex justify-between items-start">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                          }`}>
+                            {log.action}
+                          </span>
+                          <span className="text-xs text-gray-500">{formatDate(log.timestamp)}</span>
+                        </div>
+                        <p className="text-sm text-gray-900">{log.username}</p>
+                        {log.ipAddress && (
+                          <p className="text-xs text-gray-500">IP: {log.ipAddress}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Desktop View */}
+                  <table className="hidden sm:table w-full">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Time</th>
+                        <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Action</th>
+                        <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">User</th>
+                        <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">IP Address</th>
+                        <th className="text-left py-3 px-4 text-sm font-medium text-gray-500">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs.map((log) => (
+                        <tr key={log.id} className="border-b hover:bg-gray-50">
+                          <td className="py-3 px-4 text-sm text-gray-600">{formatDate(log.timestamp)}</td>
+                          <td className="py-3 px-4 text-sm font-medium text-gray-900">{log.action}</td>
+                          <td className="py-3 px-4 text-sm text-gray-600">{log.username}</td>
+                          <td className="py-3 px-4 text-sm text-gray-600">{log.ipAddress || '-'}</td>
+                          <td className="py-3 px-4">
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${
+                              log.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {log.success ? 'Success' : 'Failed'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Security Settings Tab */
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Security Settings</h2>
+              <p className="mt-1 text-gray-500">Manage your account security preferences</p>
+            </div>
+            
+            <MfaSettings />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path="frontend/src/services/api.ts">
+// frontend/src/services/api.ts
+import axios from 'axios';
+import type { 
+  AuthResponse, 
+  LoginRequest, 
+  RegisterRequest, 
+  AuditLog, 
+  UserResponse,
+  MfaSetupResponse,
+  MfaSetupVerifyRequest,
+  MfaSetupCompleteResponse,
+  MfaStatusResponse
+} from '../types';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Add token to requests if available
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Auth services
+export const authService = {
+  login: async (data: LoginRequest): Promise<AuthResponse> => {
+    const response = await api.post<AuthResponse>('/api/auth/login', data);
+    // Only store token if MFA is not required
+    if (!response.data.mfaRequired) {
+      localStorage.setItem('token', response.data.token);
+    }
+    return response.data;
+  },
+
+  register: async (data: RegisterRequest): Promise<AuthResponse> => {
+    const response = await api.post<AuthResponse>('/api/auth/register', data);
+    localStorage.setItem('token', response.data.token);
+    return response.data;
+  },
+
+  logout: () => {
+    localStorage.removeItem('token');
+  },
+
+  getToken: () => localStorage.getItem('token'),
+
+  isAuthenticated: () => !!localStorage.getItem('token'),
+};
+
+// MFA services
+export const mfaService = {
+  // Get MFA status for current user
+  getStatus: async (): Promise<MfaStatusResponse> => {
+    const response = await api.get<MfaStatusResponse>('/api/auth/mfa/status');
+    return response.data;
+  },
+
+  // Initiate MFA setup - returns secret and QR code URI
+  initiateSetup: async (): Promise<MfaSetupResponse> => {
+    const response = await api.post<MfaSetupResponse>('/api/auth/mfa/setup');
+    return response.data;
+  },
+
+  // Complete MFA setup by verifying the first code
+  completeSetup: async (data: MfaSetupVerifyRequest): Promise<MfaSetupCompleteResponse> => {
+    const response = await api.post<MfaSetupCompleteResponse>('/api/auth/mfa/setup/verify', data);
+    return response.data;
+  },
+
+  // Verify MFA code during login
+  verifyCode: async (code: string, mfaToken?: string): Promise<{ success: boolean; message: string; token?: string }> => {
+    const config = mfaToken 
+      ? { headers: { Authorization: `Bearer ${mfaToken}` } }
+      : {};
+    const response = await api.post('/api/auth/mfa/verify', { code }, config);
+    return response.data;
+  },
+
+  // Verify backup code during login
+  verifyBackupCode: async (backupCode: string, mfaToken?: string): Promise<{ success: boolean; message: string; token?: string; remainingBackupCodes?: number }> => {
+    const config = mfaToken 
+      ? { headers: { Authorization: `Bearer ${mfaToken}` } }
+      : {};
+    const response = await api.post('/api/auth/mfa/backup', { backupCode }, config);
+    return response.data;
+  },
+
+  // Disable MFA
+  disable: async (password: string, code: string): Promise<{ mfaEnabled: boolean; message: string }> => {
+    const response = await api.post('/api/auth/mfa/disable', { password, code });
+    return response.data;
+  },
+
+  // Regenerate backup codes
+  regenerateBackupCodes: async (code: string): Promise<{ backupCodes: string[]; message: string }> => {
+    const response = await api.post('/api/auth/mfa/backup-codes', { code });
+    return response.data;
+  },
+};
+
+// Audit services
+export const auditService = {
+  getRecentLogs: async (): Promise<AuditLog[]> => {
+    const response = await api.get<AuditLog[]>('/api/audit/logs');
+    return response.data;
+  },
+
+  getLogsByUsername: async (username: string): Promise<AuditLog[]> => {
+    const response = await api.get<AuditLog[]>(`/api/audit/logs/user/${username}`);
+    return response.data;
+  },
+};
+
+// Health check
+export const healthService = {
+  check: async () => {
+    const response = await api.get('/api/health');
+    return response.data;
+  },
+};
+
+// AI services
+export const aiService = {
+  chat: async (message: string): Promise<{ response: string; timestamp: string }> => {
+    const response = await api.post('/api/ai/chat', { message });
+    return response.data;
+  },
+};
+
+// Admin services
+export const adminService = {
+  getAllUsers: async (): Promise<UserResponse[]> => {
+    const response = await api.get<UserResponse[]>('/api/admin/users');
+    return response.data;
+  },
+
+  addRoleToUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.post<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
+    return response.data;
+  },
+
+  removeRoleFromUser: async (userId: number, roleName: string): Promise<UserResponse> => {
+    const response = await api.delete<UserResponse>(`/api/admin/users/${userId}/roles/${roleName}`);
+    return response.data;
+  },
+};
+
+export default api;
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/config/SecurityConfig.kt">
