@@ -257,7 +257,8 @@ class AuthorizationServiceTest {
                 username = eq("testuser"),
                 resourceType = eq("OAUTH2_CLIENT"),
                 resourceId = eq("test-client"),
-                details = any(),
+                ipAddress = anyOrNull(),
+                details = anyOrNull(),
                 success = eq(true)
             )
         }

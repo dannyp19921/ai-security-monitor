@@ -94,6 +94,7 @@ backend/
             security/
               JwtAuthenticationFilter.kt
               JwtService.kt
+              OAuth2AuthenticationSuccessHandler.kt
             service/
               AiService.kt
               AuditService.kt
@@ -185,13 +186,121 @@ infrastructure/
   README.md
 .gitignore
 docker-compose.yml
-infrastructure.zip
-oauth2-implementation.zip
 README.md
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt">
+// backend/src/main/kotlin/com/securemonitor/security/OAuth2AuthenticationSuccessHandler.kt
+package com.securemonitor.security
+
+import com.securemonitor.model.User
+import com.securemonitor.repository.RoleRepository
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.service.AuditService
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.springframework.security.core.Authentication
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.security.oauth2.core.user.OAuth2User
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler
+import org.springframework.stereotype.Component
+import org.springframework.web.util.UriComponentsBuilder
+import java.util.*
+
+/**
+ * Custom success handler for OAuth2 login.
+ * 
+ * Flow:
+ * 1. User authenticates with Google
+ * 2. We receive OAuth2User with Google profile info
+ * 3. We map to local User (create if doesn't exist)
+ * 4. We generate JWT token
+ * 5. We redirect to frontend with JWT as query parameter
+ */
+@Component
+class OAuth2AuthenticationSuccessHandler(
+    private val jwtService: JwtService,
+    private val userRepository: UserRepository,
+    private val roleRepository: RoleRepository,
+    private val passwordEncoder: PasswordEncoder,
+    private val auditService: AuditService
+) : SimpleUrlAuthenticationSuccessHandler() {
+
+    override fun onAuthenticationSuccess(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        authentication: Authentication
+    ) {
+        val oauth2User = authentication.principal as OAuth2User
+        
+        // Extract user info from Google
+        val email = oauth2User.getAttribute<String>("email") 
+            ?: throw IllegalStateException("Email not available from OAuth2 provider")
+        val name = oauth2User.getAttribute<String>("name") ?: email
+        val givenName = oauth2User.getAttribute<String>("given_name") ?: ""
+        val familyName = oauth2User.getAttribute<String>("family_name") ?: ""
+        
+        // Find or create local user
+        val user = userRepository.findByUsername(email).orElseGet {
+            createNewUser(email, name, givenName, familyName)
+        }
+        
+        // Generate JWT token
+        val token = jwtService.generateToken(user.username, user.roles.map { it.name })
+        
+        // Log successful OAuth2 login
+        auditService.log(
+            action = "OAUTH2_LOGIN_SUCCESS",
+            username = user.username,
+            resourceType = "USER",
+            resourceId = user.id.toString(),
+            ipAddress = request.remoteAddr,
+            details = "Logged in via Google OAuth2",
+            success = true
+        )
+        
+        // Redirect to frontend with JWT token
+        val targetUrl = buildRedirectUrl(token)
+        
+        logger.debug("Redirecting OAuth2 user ${user.username} to: $targetUrl")
+        
+        redirectStrategy.sendRedirect(request, response, targetUrl)
+    }
+    
+    private fun createNewUser(email: String, name: String, givenName: String, familyName: String): User {
+        logger.info("Creating new user from OAuth2 login: $email")
+        
+        val userRole = roleRepository.findByName("USER")
+            .orElseThrow { IllegalStateException("USER role not found in database") }
+        
+        val newUser = User(
+            username = email,
+            email = email,  
+            // Generate random password (user won't use it - they login via OAuth2)
+            passwordHash = passwordEncoder.encode(UUID.randomUUID().toString()),
+            roles = mutableSetOf(userRole)
+        )
+        
+        return userRepository.save(newUser)
+    }
+    
+    private fun buildRedirectUrl(token: String): String {
+        // Redirect to frontend with JWT token as query parameter
+        // Frontend will extract token and store it
+        val frontendUrl = System.getenv("FRONTEND_URL") 
+            ?: "http://localhost:5173"
+        
+        return UriComponentsBuilder.fromUriString(frontendUrl)
+            .path("/oauth2/callback")
+            .queryParam("token", token)
+            .build()
+            .toUriString()
+    }
+}
+</file>
 
 <file path="backend/gradle/wrapper/gradle-wrapper.properties">
 distributionBase=GRADLE_USER_HOME
@@ -2732,7 +2841,8 @@ class AuthorizationServiceTest {
                 username = eq("testuser"),
                 resourceType = eq("OAUTH2_CLIENT"),
                 resourceId = eq("test-client"),
-                details = any(),
+                ipAddress = anyOrNull(),
+                details = anyOrNull(),
                 success = eq(true)
             )
         }
@@ -3397,6 +3507,7 @@ out/
 
 ### Kotlin ###
 .kotlin
+.env
 </file>
 
 <file path="backend/Dockerfile">
@@ -7347,6 +7458,8 @@ dependencies {
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testImplementation("org.springframework.security:spring-security-test")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+	// Mockito Kotlin extensions for testing
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
 
 	// JWT 
 	implementation("io.jsonwebtoken:jjwt-api:0.12.5")
@@ -7356,6 +7469,9 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 
 	implementation("me.paulschwarz:spring-dotenv:4.0.0")
+
+	// OAuth2 Client (for OIDC Consumer functionality)
+   	implementation("org.springframework.boot:spring-boot-starter-oauth2-client")
 }
 
 kotlin {
@@ -7779,8 +7895,10 @@ MIT
 package com.securemonitor.config
 
 import com.securemonitor.security.JwtAuthenticationFilter
+import com.securemonitor.security.OAuth2AuthenticationSuccessHandler
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Lazy
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
@@ -7799,15 +7917,17 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
  * Configures:
  * - CORS settings
  * - CSRF protection (disabled for stateless JWT auth)
- * - Session management (stateless)
+ * - Session management (stateless for API, stateful for OAuth2)
  * - Endpoint authorization rules
  * - JWT authentication filter
+ * - OAuth2 Login (Google)
  */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
 class SecurityConfig(
-    private val jwtAuthenticationFilter: JwtAuthenticationFilter
+    private val jwtAuthenticationFilter: JwtAuthenticationFilter,
+    @Lazy private val oauth2SuccessHandler: OAuth2AuthenticationSuccessHandler
 ) {
 
     @Bean
@@ -7817,7 +7937,7 @@ class SecurityConfig(
             .csrf { it.disable() }
             .sessionManagement { 
                 // Use stateless sessions for API endpoints
-                // OAuth2 authorize endpoint may need session for login flow
+                // OAuth2 login may need session for the login flow
                 it.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
             }
             .authorizeHttpRequests { auth ->
@@ -7828,13 +7948,13 @@ class SecurityConfig(
                     // Authentication endpoints
                     .requestMatchers("/api/auth/**").permitAll()
                     
-                    // OAuth 2.0 / OIDC public endpoints
+                    // OAuth 2.0 / OIDC Provider public endpoints
                     .requestMatchers("/.well-known/openid-configuration").permitAll()
                     .requestMatchers("/.well-known/jwks.json").permitAll()
                     .requestMatchers("/oauth2/authorize").permitAll() // Requires auth inside handler
                     .requestMatchers("/oauth2/token").permitAll()
                     
-                    // OAuth 2.0 protected endpoints
+                    // OAuth 2.0 Provider protected endpoints
                     .requestMatchers("/oauth2/userinfo").authenticated()
                     
                     // Admin endpoints
@@ -7842,6 +7962,14 @@ class SecurityConfig(
                     
                     // All other requests require authentication
                     .anyRequest().authenticated()
+            }
+            // OAuth2 Login (Consumer - Sign in with Google)
+            .oauth2Login { oauth2 ->
+                oauth2
+                    .successHandler(oauth2SuccessHandler)
+                    // You can customize more here:
+                    // .loginPage("/custom-login") // Custom login page
+                    // .failureUrl("/login?error=true") // Failure redirect
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
@@ -7894,6 +8022,23 @@ spring:
     properties:
       hibernate:
         format_sql: true
+
+  # Spring Security OAuth2 Client Configuration
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - openid
+              - profile
+              - email
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+        provider:
+          google:
+            issuer-uri: https://accounts.google.com
 
 server:
   port: ${PORT:8080}

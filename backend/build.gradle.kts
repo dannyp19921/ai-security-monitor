@@ -34,6 +34,8 @@ dependencies {
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testImplementation("org.springframework.security:spring-security-test")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+	// Mockito Kotlin extensions for testing
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
 
 	// JWT 
 	implementation("io.jsonwebtoken:jjwt-api:0.12.5")
@@ -43,6 +45,9 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 
 	implementation("me.paulschwarz:spring-dotenv:4.0.0")
+
+	// OAuth2 Client (for OIDC Consumer functionality)
+   	implementation("org.springframework.boot:spring-boot-starter-oauth2-client")
 }
 
 kotlin {

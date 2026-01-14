@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { SocialLogin } from './SocialLogin';
 
 interface LoginFormProps {
   onSubmit: (username: string, password: string) => Promise<void>;
@@ -67,6 +68,11 @@ export function LoginForm({ onSubmit, onSwitchToRegister }: LoginFormProps) {
       <Button type="submit" isLoading={isLoading}>
         Sign In
       </Button>
+
+      {/* OAuth2 Social Login */}
+      <div className="mt-6">
+        <SocialLogin />
+      </div>
 
       <p className="text-center text-sm text-gray-600">
         Don't have an account?{' '}

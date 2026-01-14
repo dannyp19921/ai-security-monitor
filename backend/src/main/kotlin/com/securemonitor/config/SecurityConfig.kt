@@ -2,8 +2,10 @@
 package com.securemonitor.config
 
 import com.securemonitor.security.JwtAuthenticationFilter
+import com.securemonitor.security.OAuth2AuthenticationSuccessHandler
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Lazy
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
@@ -22,15 +24,17 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
  * Configures:
  * - CORS settings
  * - CSRF protection (disabled for stateless JWT auth)
- * - Session management (stateless)
+ * - Session management (stateless for API, stateful for OAuth2)
  * - Endpoint authorization rules
  * - JWT authentication filter
+ * - OAuth2 Login (Google)
  */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
 class SecurityConfig(
-    private val jwtAuthenticationFilter: JwtAuthenticationFilter
+    private val jwtAuthenticationFilter: JwtAuthenticationFilter,
+    @Lazy private val oauth2SuccessHandler: OAuth2AuthenticationSuccessHandler
 ) {
 
     @Bean
@@ -40,7 +44,7 @@ class SecurityConfig(
             .csrf { it.disable() }
             .sessionManagement { 
                 // Use stateless sessions for API endpoints
-                // OAuth2 authorize endpoint may need session for login flow
+                // OAuth2 login may need session for the login flow
                 it.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
             }
             .authorizeHttpRequests { auth ->
@@ -51,13 +55,13 @@ class SecurityConfig(
                     // Authentication endpoints
                     .requestMatchers("/api/auth/**").permitAll()
                     
-                    // OAuth 2.0 / OIDC public endpoints
+                    // OAuth 2.0 / OIDC Provider public endpoints
                     .requestMatchers("/.well-known/openid-configuration").permitAll()
                     .requestMatchers("/.well-known/jwks.json").permitAll()
                     .requestMatchers("/oauth2/authorize").permitAll() // Requires auth inside handler
                     .requestMatchers("/oauth2/token").permitAll()
                     
-                    // OAuth 2.0 protected endpoints
+                    // OAuth 2.0 Provider protected endpoints
                     .requestMatchers("/oauth2/userinfo").authenticated()
                     
                     // Admin endpoints
@@ -65,6 +69,14 @@ class SecurityConfig(
                     
                     // All other requests require authentication
                     .anyRequest().authenticated()
+            }
+            // OAuth2 Login (Consumer - Sign in with Google)
+            .oauth2Login { oauth2 ->
+                oauth2
+                    .successHandler(oauth2SuccessHandler)
+                    // You can customize more here:
+                    // .loginPage("/custom-login") // Custom login page
+                    // .failureUrl("/login?error=true") // Failure redirect
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
 
