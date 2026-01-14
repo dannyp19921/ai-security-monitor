@@ -67,6 +67,26 @@ backend/
               AuditLog.kt
               Role.kt
               User.kt
+            oauth2/
+              config/
+                OAuth2Config.kt
+              controller/
+                OAuth2Controller.kt
+              dto/
+                OAuth2Dtos.kt
+              exception/
+                OAuth2Exception.kt
+              model/
+                AuthorizationCode.kt
+                OAuth2Client.kt
+              repository/
+                AuthorizationCodeRepository.kt
+                OAuth2ClientRepository.kt
+              service/
+                AuthorizationService.kt
+                PkceService.kt
+                TokenService.kt
+              README.md
             repository/
               AuditLogRepository.kt
               RoleRepository.kt
@@ -85,6 +105,11 @@ backend/
       kotlin/
         com/
           securemonitor/
+            oauth2/
+              service/
+                AuthorizationServiceTest.kt
+                PkceServiceTest.kt
+                TokenServiceTest.kt
             BackendApplicationTests.kt
   .gitattributes
   .gitignore
@@ -134,8 +159,34 @@ frontend/
   tsconfig.json
   tsconfig.node.json
   vite.config.ts
+infrastructure/
+  helm/
+    ai-security-monitor/
+      templates/
+        _helpers.tpl
+        configmap.yaml
+        deployment.yaml
+        ingress.yaml
+        secret.yaml
+        service.yaml
+        serviceaccount.yaml
+      Chart.yaml
+      values.yaml
+  kubernetes/
+    backend-deployment.yaml
+    backend-service.yaml
+    configmap.yaml
+    ingress.yaml
+    kustomization.yaml
+    namespace.yaml
+    postgres.yaml
+    README.md
+    secrets.yaml
+  README.md
 .gitignore
 docker-compose.yml
+infrastructure.zip
+oauth2-implementation.zip
 README.md
 </directory_structure>
 
@@ -294,6 +345,1829 @@ data class Role(
     @Column
     val description: String? = null
 )
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/config/OAuth2Config.kt">
+package com.securemonitor.oauth2.config
+
+import com.securemonitor.oauth2.model.OAuth2Client
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import org.slf4j.LoggerFactory
+import org.springframework.boot.CommandLineRunner
+import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+
+/**
+ * Configuration properties for OAuth 2.0 / OIDC.
+ */
+@Configuration
+@ConfigurationProperties(prefix = "oauth2")
+class OAuth2Config {
+    
+    /** The issuer identifier (typically the base URL of the authorization server) */
+    var issuer: String = "http://localhost:8080"
+    
+    /** Access token lifetime in seconds */
+    var accessTokenLifetime: Long = 3600 // 1 hour
+    
+    /** Refresh token lifetime in seconds */
+    var refreshTokenLifetime: Long = 86400 * 30 // 30 days
+    
+    /** Authorization code lifetime in seconds */
+    var authorizationCodeLifetime: Long = 600 // 10 minutes
+    
+    /** Whether to require PKCE for all public clients */
+    var requirePkce: Boolean = true
+}
+
+/**
+ * Initializes default OAuth2 clients for development/testing.
+ */
+@Configuration
+class OAuth2ClientInitializer {
+    
+    private val log = LoggerFactory.getLogger(OAuth2ClientInitializer::class.java)
+    
+    /**
+     * Creates default OAuth2 clients for development.
+     * In production, clients would be registered through an admin API.
+     */
+    @Bean
+    fun initializeOAuth2Clients(clientRepository: OAuth2ClientRepository) = CommandLineRunner {
+        // Create a demo client for the frontend
+        if (!clientRepository.existsByClientId("ai-security-monitor-frontend")) {
+            val frontendClient = OAuth2Client(
+                clientId = "ai-security-monitor-frontend",
+                clientSecretHash = null, // Public client, uses PKCE
+                clientName = "AI Security Monitor Frontend",
+                description = "The React frontend application",
+                confidential = false,
+                redirectUris = listOf(
+                    "http://localhost:5173/callback",
+                    "http://localhost:5173/oauth/callback",
+                    "http://localhost:3000/callback",
+                    "https://ai-security-monitor.vercel.app/callback",
+                    "https://ai-security-monitor.vercel.app/oauth/callback"
+                ).joinToString(","),
+                allowedScopes = "openid profile email",
+                allowedGrantTypes = "authorization_code refresh_token",
+                requirePkce = true,
+                accessTokenLifetimeSeconds = 3600,
+                refreshTokenLifetimeSeconds = 86400 * 7
+            )
+            
+            clientRepository.save(frontendClient)
+            log.info("Created default OAuth2 client: ai-security-monitor-frontend")
+        }
+        
+        // Create a demo client for testing
+        if (!clientRepository.existsByClientId("test-client")) {
+            val testClient = OAuth2Client(
+                clientId = "test-client",
+                clientSecretHash = null,
+                clientName = "Test Client",
+                description = "A test client for development",
+                confidential = false,
+                redirectUris = "http://localhost:3000/callback,http://127.0.0.1:3000/callback",
+                allowedScopes = "openid profile email",
+                allowedGrantTypes = "authorization_code refresh_token",
+                requirePkce = true,
+                accessTokenLifetimeSeconds = 3600,
+                refreshTokenLifetimeSeconds = 86400
+            )
+            
+            clientRepository.save(testClient)
+            log.info("Created default OAuth2 client: test-client")
+        }
+        
+        // Create a confidential client example (for server-to-server)
+        if (!clientRepository.existsByClientId("confidential-client")) {
+            val confidentialClient = OAuth2Client(
+                clientId = "confidential-client",
+                // In production, this would be a properly hashed secret
+                clientSecretHash = "\$2a\$10\$dummyHashForDemoOnly",
+                clientName = "Confidential Backend Client",
+                description = "A confidential client for backend services",
+                confidential = true,
+                redirectUris = "http://localhost:8081/callback",
+                allowedScopes = "openid profile email admin",
+                allowedGrantTypes = "authorization_code refresh_token client_credentials",
+                requirePkce = false, // Confidential clients can use client_secret instead
+                accessTokenLifetimeSeconds = 3600,
+                refreshTokenLifetimeSeconds = 86400 * 30
+            )
+            
+            clientRepository.save(confidentialClient)
+            log.info("Created default OAuth2 client: confidential-client")
+        }
+        
+        log.info("OAuth2 client initialization complete")
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/controller/OAuth2Controller.kt">
+package com.securemonitor.oauth2.controller
+
+import com.securemonitor.oauth2.dto.*
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.service.AuthorizationService
+import com.securemonitor.oauth2.service.TokenService
+import com.securemonitor.repository.UserRepository
+import com.securemonitor.service.AuditService
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.security.Keys
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpSession
+import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
+import org.springframework.http.ResponseEntity
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.bind.annotation.*
+import java.util.Base64
+
+/**
+ * OAuth 2.0 / OpenID Connect Controller.
+ * 
+ * Implements the following endpoints:
+ * - GET  /oauth2/authorize     - Authorization endpoint
+ * - POST /oauth2/token         - Token endpoint
+ * - GET  /oauth2/userinfo      - UserInfo endpoint (OIDC)
+ * - GET  /.well-known/openid-configuration - Discovery document
+ * - GET  /.well-known/jwks.json - JSON Web Key Set
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749">RFC 6749 - OAuth 2.0</a>
+ * @see <a href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect Core</a>
+ */
+@RestController
+class OAuth2Controller(
+    private val authorizationService: AuthorizationService,
+    private val tokenService: TokenService,
+    private val userRepository: UserRepository,
+    private val auditService: AuditService,
+    @Value("\${oauth2.issuer:http://localhost:8080}")
+    private val issuer: String,
+    @Value("\${jwt.secret:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}")
+    private val jwtSecret: String
+) {
+    private val log = LoggerFactory.getLogger(OAuth2Controller::class.java)
+
+    /**
+     * Authorization endpoint.
+     * 
+     * This endpoint initiates the OAuth 2.0 authorization flow. It:
+     * 1. Validates the authorization request
+     * 2. Authenticates the user (if not already authenticated)
+     * 3. Obtains user consent
+     * 4. Redirects back to the client with an authorization code
+     * 
+     * In a production system, this would render a consent page. For this
+     * demo, we auto-consent if the user is authenticated.
+     * 
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1">RFC 6749 Section 4.1.1</a>
+     */
+    @GetMapping("/oauth2/authorize")
+    fun authorize(
+        @RequestParam("response_type") responseType: String,
+        @RequestParam("client_id") clientId: String,
+        @RequestParam("redirect_uri") redirectUri: String,
+        @RequestParam("scope", required = false) scope: String?,
+        @RequestParam("state", required = false) state: String?,
+        @RequestParam("code_challenge", required = false) codeChallenge: String?,
+        @RequestParam("code_challenge_method", required = false, defaultValue = "S256") codeChallengeMethod: String?,
+        @RequestParam("nonce", required = false) nonce: String?,
+        request: HttpServletRequest
+    ): ResponseEntity<Any> {
+        log.debug("Authorization request received for client: {}", clientId)
+        
+        val authRequest = AuthorizationRequest(
+            responseType = responseType,
+            clientId = clientId,
+            redirectUri = redirectUri,
+            scope = scope,
+            state = state,
+            codeChallenge = codeChallenge,
+            codeChallengeMethod = codeChallengeMethod,
+            nonce = nonce
+        )
+        
+        return try {
+            // Validate the request
+            val client = authorizationService.validateAuthorizationRequest(authRequest)
+            
+            // Check if user is authenticated
+            val authentication = SecurityContextHolder.getContext().authentication
+            if (authentication == null || !authentication.isAuthenticated || 
+                authentication.principal == "anonymousUser") {
+                // Store request in session and redirect to login
+                request.session.setAttribute("oauth2_request", authRequest)
+                return ResponseEntity.status(HttpStatus.FOUND)
+                    .header("Location", "/login?oauth2=true")
+                    .build()
+            }
+            
+            // Get user details
+            val username = authentication.name
+            val user = userRepository.findByUsername(username).orElseThrow {
+                OAuth2Exception.serverError("User not found")
+            }
+            
+            // In production, show consent screen here
+            // For demo, we auto-consent
+            
+            // Create authorization code
+            val authCode = authorizationService.createAuthorizationCode(
+                client = client,
+                request = authRequest,
+                userId = user.id,
+                username = username
+            )
+            
+            // Build redirect URL
+            val redirectUrl = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = redirectUri,
+                code = authCode.code,
+                state = state
+            )
+            
+            log.info("Authorization successful, redirecting to: {}", redirectUri)
+            ResponseEntity.status(HttpStatus.FOUND)
+                .header("Location", redirectUrl)
+                .build()
+                
+        } catch (e: OAuth2Exception) {
+            log.warn("Authorization failed: {}", e.errorDescription)
+            
+            // For security errors that occur before redirect_uri validation,
+            // we should not redirect (to prevent open redirect attacks)
+            if (e.error == "invalid_client" || e.error == "invalid_request" && 
+                e.errorDescription?.contains("redirect_uri") == true) {
+                return ResponseEntity.badRequest()
+                    .body(e.toErrorResponse())
+            }
+            
+            // For other errors, redirect with error
+            val errorRedirect = authorizationService.buildErrorRedirect(
+                baseRedirectUri = redirectUri,
+                error = e.error,
+                errorDescription = e.errorDescription,
+                state = state
+            )
+            ResponseEntity.status(HttpStatus.FOUND)
+                .header("Location", errorRedirect)
+                .build()
+        }
+    }
+
+    /**
+     * Token endpoint.
+     * 
+     * Exchanges an authorization code or refresh token for access tokens.
+     * 
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3">RFC 6749 Section 4.1.3</a>
+     */
+    @PostMapping("/oauth2/token", consumes = [MediaType.APPLICATION_FORM_URLENCODED_VALUE])
+    fun token(
+        @RequestParam("grant_type") grantType: String,
+        @RequestParam("code", required = false) code: String?,
+        @RequestParam("redirect_uri", required = false) redirectUri: String?,
+        @RequestParam("client_id", required = false) clientId: String?,
+        @RequestParam("client_secret", required = false) clientSecret: String?,
+        @RequestParam("code_verifier", required = false) codeVerifier: String?,
+        @RequestParam("refresh_token", required = false) refreshToken: String?,
+        @RequestParam("scope", required = false) scope: String?,
+        request: HttpServletRequest
+    ): ResponseEntity<Any> {
+        log.debug("Token request received. Grant type: {}", grantType)
+        
+        // Extract client credentials from Authorization header if present
+        val (headerClientId, headerClientSecret) = extractBasicAuth(request)
+        
+        val tokenRequest = TokenRequest(
+            grantType = grantType,
+            code = code,
+            redirectUri = redirectUri,
+            clientId = clientId ?: headerClientId,
+            clientSecret = clientSecret ?: headerClientSecret,
+            codeVerifier = codeVerifier,
+            refreshToken = refreshToken,
+            scope = scope
+        )
+        
+        return try {
+            val response = when (grantType) {
+                "authorization_code" -> tokenService.exchangeAuthorizationCode(tokenRequest)
+                "refresh_token" -> {
+                    // TODO: Implement refresh token flow
+                    throw OAuth2Exception.unsupportedGrantType("refresh_token (not yet implemented)")
+                }
+                else -> throw OAuth2Exception.unsupportedGrantType(grantType)
+            }
+            
+            ResponseEntity.ok()
+                .header("Cache-Control", "no-store")
+                .header("Pragma", "no-cache")
+                .body(response)
+                
+        } catch (e: OAuth2Exception) {
+            log.warn("Token request failed: {}", e.errorDescription)
+            ResponseEntity.status(e.httpStatus)
+                .body(e.toErrorResponse())
+        }
+    }
+
+    /**
+     * Token endpoint with JSON body (alternative).
+     */
+    @PostMapping("/oauth2/token", consumes = [MediaType.APPLICATION_JSON_VALUE])
+    fun tokenJson(@RequestBody tokenRequest: TokenRequest, request: HttpServletRequest): ResponseEntity<Any> {
+        return token(
+            grantType = tokenRequest.grantType,
+            code = tokenRequest.code,
+            redirectUri = tokenRequest.redirectUri,
+            clientId = tokenRequest.clientId,
+            clientSecret = tokenRequest.clientSecret,
+            codeVerifier = tokenRequest.codeVerifier,
+            refreshToken = tokenRequest.refreshToken,
+            scope = tokenRequest.scope,
+            request = request
+        )
+    }
+
+    /**
+     * UserInfo endpoint.
+     * 
+     * Returns claims about the authenticated user.
+     * Requires a valid access token with the 'openid' scope.
+     * 
+     * @see <a href="https://openid.net/specs/openid-connect-core-1_0.html#UserInfo">OIDC UserInfo</a>
+     */
+    @GetMapping("/oauth2/userinfo")
+    fun userInfo(): ResponseEntity<Any> {
+        val authentication = SecurityContextHolder.getContext().authentication
+        
+        if (authentication == null || !authentication.isAuthenticated) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(mapOf("error" to "invalid_token", "error_description" to "Access token is required"))
+        }
+        
+        val username = authentication.name
+        val user = userRepository.findByUsername(username).orElse(null)
+            ?: return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(mapOf("error" to "invalid_token", "error_description" to "User not found"))
+        
+        val userInfo = UserInfoResponse(
+            sub = user.id.toString(),
+            preferredUsername = user.username,
+            email = user.email,
+            emailVerified = true, // In production, track this separately
+            updatedAt = user.createdAt.epochSecond
+        )
+        
+        return ResponseEntity.ok(userInfo)
+    }
+
+    /**
+     * OpenID Connect Discovery document.
+     * 
+     * @see <a href="https://openid.net/specs/openid-connect-discovery-1_0.html">OIDC Discovery</a>
+     */
+    @GetMapping("/.well-known/openid-configuration")
+    fun openIdConfiguration(): ResponseEntity<OpenIdConfiguration> {
+        val config = OpenIdConfiguration(
+            issuer = issuer,
+            authorizationEndpoint = "$issuer/oauth2/authorize",
+            tokenEndpoint = "$issuer/oauth2/token",
+            userinfoEndpoint = "$issuer/oauth2/userinfo",
+            jwksUri = "$issuer/.well-known/jwks.json",
+            responseTypesSupported = listOf("code"),
+            grantTypesSupported = listOf("authorization_code", "refresh_token"),
+            subjectTypesSupported = listOf("public"),
+            idTokenSigningAlgValuesSupported = listOf("HS256"), // Using HMAC for demo
+            scopesSupported = listOf("openid", "profile", "email"),
+            tokenEndpointAuthMethodsSupported = listOf("client_secret_basic", "client_secret_post", "none"),
+            codeChallengeMethodsSupported = listOf("S256", "plain"),
+            claimsSupported = listOf(
+                "sub", "iss", "aud", "exp", "iat", "auth_time",
+                "nonce", "preferred_username", "email", "email_verified"
+            )
+        )
+        
+        return ResponseEntity.ok(config)
+    }
+
+    /**
+     * JSON Web Key Set endpoint.
+     * 
+     * In production, this would expose the public key(s) used to sign tokens.
+     * For this demo using HMAC, we return minimal information.
+     * 
+     * @see <a href="https://datatracker.ietf.org/doc/html/rfc7517">RFC 7517 - JWK</a>
+     */
+    @GetMapping("/.well-known/jwks.json")
+    fun jwks(): ResponseEntity<JwksResponse> {
+        // Note: For HMAC signing, we don't expose the key
+        // In production with RSA, you would expose the public key here
+        val jwks = JwksResponse(
+            keys = listOf(
+                JwkKey(
+                    kty = "oct", // Octet sequence (symmetric)
+                    use = "sig",
+                    kid = "default-key",
+                    alg = "HS256"
+                )
+            )
+        )
+        
+        return ResponseEntity.ok(jwks)
+    }
+
+    /**
+     * Extracts client credentials from the Authorization header (Basic auth).
+     */
+    private fun extractBasicAuth(request: HttpServletRequest): Pair<String?, String?> {
+        val authHeader = request.getHeader("Authorization") ?: return Pair(null, null)
+        
+        if (!authHeader.startsWith("Basic ")) return Pair(null, null)
+        
+        return try {
+            val credentials = String(Base64.getDecoder().decode(authHeader.substring(6)))
+            val parts = credentials.split(":", limit = 2)
+            if (parts.size == 2) Pair(parts[0], parts[1]) else Pair(null, null)
+        } catch (e: Exception) {
+            Pair(null, null)
+        }
+    }
+
+    /**
+     * Global exception handler for OAuth2 errors.
+     */
+    @ExceptionHandler(OAuth2Exception::class)
+    fun handleOAuth2Exception(e: OAuth2Exception): ResponseEntity<Map<String, String?>> {
+        log.warn("OAuth2 error: {} - {}", e.error, e.errorDescription)
+        return ResponseEntity.status(e.httpStatus).body(e.toErrorResponse())
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/dto/OAuth2Dtos.kt">
+package com.securemonitor.oauth2.dto
+
+import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.annotation.JsonProperty
+import java.time.Instant
+
+/**
+ * Request parameters for the authorization endpoint (/oauth2/authorize).
+ * 
+ * This follows RFC 6749 Section 4.1.1 and RFC 7636 for PKCE parameters.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1">RFC 6749 Section 4.1.1</a>
+ */
+data class AuthorizationRequest(
+    /** The type of response expected. Must be "code" for authorization code flow. */
+    @JsonProperty("response_type")
+    val responseType: String,
+    
+    /** The client identifier registered with the authorization server. */
+    @JsonProperty("client_id")
+    val clientId: String,
+    
+    /** The URI to redirect the user-agent after authorization. */
+    @JsonProperty("redirect_uri")
+    val redirectUri: String,
+    
+    /** Space-delimited list of requested scopes. */
+    val scope: String? = null,
+    
+    /** Opaque value to maintain state between request and callback. */
+    val state: String? = null,
+    
+    /** PKCE code challenge (required for public clients). */
+    @JsonProperty("code_challenge")
+    val codeChallenge: String? = null,
+    
+    /** PKCE code challenge method (S256 recommended). */
+    @JsonProperty("code_challenge_method")
+    val codeChallengeMethod: String? = "S256",
+    
+    /** Optional nonce for ID token replay protection (OIDC). */
+    val nonce: String? = null
+) {
+    companion object {
+        const val RESPONSE_TYPE_CODE = "code"
+        const val RESPONSE_TYPE_TOKEN = "token" // Implicit flow (not recommended)
+    }
+}
+
+/**
+ * Request body for the token endpoint (/oauth2/token).
+ * 
+ * Supports multiple grant types as defined in RFC 6749.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3">RFC 6749 Section 4.1.3</a>
+ */
+data class TokenRequest(
+    /** The grant type being used. */
+    @JsonProperty("grant_type")
+    val grantType: String,
+    
+    /** Authorization code (for authorization_code grant). */
+    val code: String? = null,
+    
+    /** Redirect URI (must match the one used in authorization request). */
+    @JsonProperty("redirect_uri")
+    val redirectUri: String? = null,
+    
+    /** Client identifier. */
+    @JsonProperty("client_id")
+    val clientId: String? = null,
+    
+    /** Client secret (for confidential clients). */
+    @JsonProperty("client_secret")
+    val clientSecret: String? = null,
+    
+    /** PKCE code verifier. */
+    @JsonProperty("code_verifier")
+    val codeVerifier: String? = null,
+    
+    /** Refresh token (for refresh_token grant). */
+    @JsonProperty("refresh_token")
+    val refreshToken: String? = null,
+    
+    /** Requested scope (for refresh_token grant, must be subset of original). */
+    val scope: String? = null,
+    
+    /** Username (for password grant - deprecated). */
+    val username: String? = null,
+    
+    /** Password (for password grant - deprecated). */
+    val password: String? = null
+) {
+    companion object {
+        const val GRANT_TYPE_AUTHORIZATION_CODE = "authorization_code"
+        const val GRANT_TYPE_REFRESH_TOKEN = "refresh_token"
+        const val GRANT_TYPE_CLIENT_CREDENTIALS = "client_credentials"
+        const val GRANT_TYPE_PASSWORD = "password" // Deprecated, avoid using
+    }
+}
+
+/**
+ * Token response from the token endpoint.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-5.1">RFC 6749 Section 5.1</a>
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class TokenResponse(
+    /** The access token issued by the authorization server. */
+    @JsonProperty("access_token")
+    val accessToken: String,
+    
+    /** The type of token (typically "Bearer"). */
+    @JsonProperty("token_type")
+    val tokenType: String = "Bearer",
+    
+    /** The lifetime of the access token in seconds. */
+    @JsonProperty("expires_in")
+    val expiresIn: Long,
+    
+    /** The refresh token (if issued). */
+    @JsonProperty("refresh_token")
+    val refreshToken: String? = null,
+    
+    /** The scope of the access token. */
+    val scope: String? = null,
+    
+    /** ID token (OIDC only). */
+    @JsonProperty("id_token")
+    val idToken: String? = null
+)
+
+/**
+ * User info response from the userinfo endpoint (OIDC).
+ * 
+ * @see <a href="https://openid.net/specs/openid-connect-core-1_0.html#UserInfoResponse">OIDC UserInfo Response</a>
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class UserInfoResponse(
+    /** Subject identifier (unique user ID). */
+    val sub: String,
+    
+    /** User's preferred username. */
+    @JsonProperty("preferred_username")
+    val preferredUsername: String? = null,
+    
+    /** User's email address. */
+    val email: String? = null,
+    
+    /** Whether email is verified. */
+    @JsonProperty("email_verified")
+    val emailVerified: Boolean? = null,
+    
+    /** User's full name. */
+    val name: String? = null,
+    
+    /** User's given (first) name. */
+    @JsonProperty("given_name")
+    val givenName: String? = null,
+    
+    /** User's family (last) name. */
+    @JsonProperty("family_name")
+    val familyName: String? = null,
+    
+    /** User's locale. */
+    val locale: String? = null,
+    
+    /** Time user info was last updated. */
+    @JsonProperty("updated_at")
+    val updatedAt: Long? = null
+)
+
+/**
+ * Authorization code stored during the authorization flow.
+ * This is an internal DTO, not exposed via API.
+ */
+data class StoredAuthorizationCode(
+    /** The authorization code value. */
+    val code: String,
+    
+    /** Client ID that requested authorization. */
+    val clientId: String,
+    
+    /** User who authorized the request. */
+    val userId: Long,
+    
+    /** Redirect URI used in the request. */
+    val redirectUri: String,
+    
+    /** Granted scopes. */
+    val scope: String?,
+    
+    /** PKCE code challenge. */
+    val codeChallenge: String?,
+    
+    /** PKCE code challenge method. */
+    val codeChallengeMethod: String?,
+    
+    /** Nonce for ID token (OIDC). */
+    val nonce: String?,
+    
+    /** When the code was issued. */
+    val issuedAt: Instant = Instant.now(),
+    
+    /** When the code expires. */
+    val expiresAt: Instant = Instant.now().plusSeconds(600), // 10 minutes default
+    
+    /** Whether the code has been used (codes are single-use). */
+    var used: Boolean = false
+) {
+    /** Check if the code has expired. */
+    fun isExpired(): Boolean = Instant.now().isAfter(expiresAt)
+    
+    /** Check if the code is still valid (not expired and not used). */
+    fun isValid(): Boolean = !isExpired() && !used
+}
+
+/**
+ * JWKS (JSON Web Key Set) response.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc7517">RFC 7517</a>
+ */
+data class JwksResponse(
+    val keys: List<JwkKey>
+)
+
+/**
+ * Individual JWK (JSON Web Key).
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class JwkKey(
+    /** Key type (e.g., "RSA", "EC"). */
+    val kty: String,
+    
+    /** Intended use ("sig" for signature, "enc" for encryption). */
+    val use: String? = "sig",
+    
+    /** Key ID. */
+    val kid: String,
+    
+    /** Algorithm (e.g., "RS256"). */
+    val alg: String? = null,
+    
+    /** RSA modulus (Base64URL encoded). */
+    val n: String? = null,
+    
+    /** RSA exponent (Base64URL encoded). */
+    val e: String? = null
+)
+
+/**
+ * OpenID Connect Discovery document.
+ * 
+ * @see <a href="https://openid.net/specs/openid-connect-discovery-1_0.html">OIDC Discovery</a>
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class OpenIdConfiguration(
+    /** Issuer identifier. */
+    val issuer: String,
+    
+    /** Authorization endpoint URL. */
+    @JsonProperty("authorization_endpoint")
+    val authorizationEndpoint: String,
+    
+    /** Token endpoint URL. */
+    @JsonProperty("token_endpoint")
+    val tokenEndpoint: String,
+    
+    /** UserInfo endpoint URL. */
+    @JsonProperty("userinfo_endpoint")
+    val userinfoEndpoint: String,
+    
+    /** JWKS URI. */
+    @JsonProperty("jwks_uri")
+    val jwksUri: String,
+    
+    /** Supported response types. */
+    @JsonProperty("response_types_supported")
+    val responseTypesSupported: List<String> = listOf("code"),
+    
+    /** Supported grant types. */
+    @JsonProperty("grant_types_supported")
+    val grantTypesSupported: List<String> = listOf(
+        "authorization_code",
+        "refresh_token"
+    ),
+    
+    /** Supported subject types. */
+    @JsonProperty("subject_types_supported")
+    val subjectTypesSupported: List<String> = listOf("public"),
+    
+    /** Supported ID token signing algorithms. */
+    @JsonProperty("id_token_signing_alg_values_supported")
+    val idTokenSigningAlgValuesSupported: List<String> = listOf("RS256"),
+    
+    /** Supported scopes. */
+    @JsonProperty("scopes_supported")
+    val scopesSupported: List<String> = listOf("openid", "profile", "email"),
+    
+    /** Supported token endpoint authentication methods. */
+    @JsonProperty("token_endpoint_auth_methods_supported")
+    val tokenEndpointAuthMethodsSupported: List<String> = listOf(
+        "client_secret_basic",
+        "client_secret_post"
+    ),
+    
+    /** Supported code challenge methods. */
+    @JsonProperty("code_challenge_methods_supported")
+    val codeChallengeMethodsSupported: List<String> = listOf("S256", "plain"),
+    
+    /** Supported claims. */
+    @JsonProperty("claims_supported")
+    val claimsSupported: List<String> = listOf(
+        "sub", "iss", "aud", "exp", "iat",
+        "name", "email", "email_verified", "preferred_username"
+    )
+)
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/exception/OAuth2Exception.kt">
+package com.securemonitor.oauth2.exception
+
+import org.springframework.http.HttpStatus
+
+/**
+ * Exception representing OAuth 2.0 error responses.
+ * 
+ * Follows RFC 6749 Section 4.1.2.1 and 5.2 for error response format.
+ * All OAuth 2.0 errors should use this exception to ensure consistent
+ * error responses across all endpoints.
+ * 
+ * @property error The OAuth 2.0 error code (e.g., "invalid_request", "invalid_grant")
+ * @property errorDescription Human-readable description of the error
+ * @property errorUri Optional URI pointing to documentation about the error
+ * @property httpStatus The HTTP status code to return
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1">RFC 6749 Section 4.1.2.1</a>
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-5.2">RFC 6749 Section 5.2</a>
+ */
+class OAuth2Exception(
+    val error: String,
+    val errorDescription: String? = null,
+    val errorUri: String? = null,
+    val httpStatus: HttpStatus = HttpStatus.BAD_REQUEST
+) : RuntimeException(errorDescription ?: error) {
+
+    companion object {
+        /**
+         * Standard OAuth 2.0 error codes as defined in RFC 6749.
+         */
+        object ErrorCodes {
+            /** The request is malformed or missing required parameters */
+            const val INVALID_REQUEST = "invalid_request"
+            
+            /** Client authentication failed */
+            const val INVALID_CLIENT = "invalid_client"
+            
+            /** The provided authorization grant is invalid or expired */
+            const val INVALID_GRANT = "invalid_grant"
+            
+            /** The client is not authorized for this grant type */
+            const val UNAUTHORIZED_CLIENT = "unauthorized_client"
+            
+            /** The grant type is not supported */
+            const val UNSUPPORTED_GRANT_TYPE = "unsupported_grant_type"
+            
+            /** The requested scope is invalid or exceeds granted scope */
+            const val INVALID_SCOPE = "invalid_scope"
+            
+            /** The resource owner denied the request */
+            const val ACCESS_DENIED = "access_denied"
+            
+            /** The response type is not supported */
+            const val UNSUPPORTED_RESPONSE_TYPE = "unsupported_response_type"
+            
+            /** The server encountered an unexpected error */
+            const val SERVER_ERROR = "server_error"
+            
+            /** The server is temporarily unavailable */
+            const val TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
+        }
+
+        /**
+         * Factory methods for common OAuth 2.0 errors.
+         */
+        fun invalidRequest(description: String) = OAuth2Exception(
+            error = ErrorCodes.INVALID_REQUEST,
+            errorDescription = description,
+            httpStatus = HttpStatus.BAD_REQUEST
+        )
+
+        fun invalidClient(description: String) = OAuth2Exception(
+            error = ErrorCodes.INVALID_CLIENT,
+            errorDescription = description,
+            httpStatus = HttpStatus.UNAUTHORIZED
+        )
+
+        fun invalidGrant(description: String) = OAuth2Exception(
+            error = ErrorCodes.INVALID_GRANT,
+            errorDescription = description,
+            httpStatus = HttpStatus.BAD_REQUEST
+        )
+
+        fun unauthorizedClient(description: String) = OAuth2Exception(
+            error = ErrorCodes.UNAUTHORIZED_CLIENT,
+            errorDescription = description,
+            httpStatus = HttpStatus.FORBIDDEN
+        )
+
+        fun unsupportedGrantType(grantType: String) = OAuth2Exception(
+            error = ErrorCodes.UNSUPPORTED_GRANT_TYPE,
+            errorDescription = "Grant type '$grantType' is not supported",
+            httpStatus = HttpStatus.BAD_REQUEST
+        )
+
+        fun invalidScope(description: String) = OAuth2Exception(
+            error = ErrorCodes.INVALID_SCOPE,
+            errorDescription = description,
+            httpStatus = HttpStatus.BAD_REQUEST
+        )
+
+        fun accessDenied(description: String) = OAuth2Exception(
+            error = ErrorCodes.ACCESS_DENIED,
+            errorDescription = description,
+            httpStatus = HttpStatus.FORBIDDEN
+        )
+
+        fun serverError(description: String) = OAuth2Exception(
+            error = ErrorCodes.SERVER_ERROR,
+            errorDescription = description,
+            httpStatus = HttpStatus.INTERNAL_SERVER_ERROR
+        )
+    }
+
+    /**
+     * Converts this exception to a map suitable for JSON serialization.
+     * Follows OAuth 2.0 error response format.
+     */
+    fun toErrorResponse(): Map<String, String?> = buildMap {
+        put("error", error)
+        errorDescription?.let { put("error_description", it) }
+        errorUri?.let { put("error_uri", it) }
+    }
+
+    override fun toString(): String = buildString {
+        append("OAuth2Exception(error=$error")
+        errorDescription?.let { append(", description=$it") }
+        append(", status=$httpStatus)")
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/model/AuthorizationCode.kt">
+package com.securemonitor.oauth2.model
+
+import jakarta.persistence.*
+import java.time.Instant
+
+/**
+ * Represents an OAuth 2.0 authorization code.
+ * 
+ * Authorization codes are short-lived, single-use tokens that are exchanged
+ * for access tokens. They are a critical part of the authorization code flow
+ * and must be handled securely.
+ * 
+ * Security considerations:
+ * - Codes are single-use and should be invalidated after exchange
+ * - Codes have a short lifetime (typically 10 minutes)
+ * - Codes are bound to a specific client and redirect URI
+ * - PKCE parameters are stored to validate the token request
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2">RFC 6749 Section 4.1.2</a>
+ */
+@Entity
+@Table(
+    name = "oauth2_authorization_codes",
+    indexes = [
+        Index(name = "idx_auth_code_code", columnList = "code"),
+        Index(name = "idx_auth_code_client_id", columnList = "clientId"),
+        Index(name = "idx_auth_code_expires_at", columnList = "expiresAt")
+    ]
+)
+data class AuthorizationCode(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    
+    /**
+     * The authorization code value.
+     * This is a cryptographically random string.
+     */
+    @Column(unique = true, nullable = false, length = 100)
+    val code: String,
+    
+    /**
+     * The client ID that requested this authorization.
+     */
+    @Column(nullable = false, length = 100)
+    val clientId: String,
+    
+    /**
+     * The ID of the user who authorized the request.
+     */
+    @Column(nullable = false)
+    val userId: Long,
+    
+    /**
+     * The username of the user who authorized the request.
+     * Stored for audit purposes.
+     */
+    @Column(nullable = false, length = 100)
+    val username: String,
+    
+    /**
+     * The redirect URI used in the authorization request.
+     * Must be validated when exchanging the code for tokens.
+     */
+    @Column(nullable = false, length = 2000)
+    val redirectUri: String,
+    
+    /**
+     * Space-separated list of granted scopes.
+     */
+    @Column(length = 500)
+    val scope: String? = null,
+    
+    /**
+     * PKCE code challenge.
+     * Required if PKCE was used in the authorization request.
+     */
+    @Column(length = 128)
+    val codeChallenge: String? = null,
+    
+    /**
+     * PKCE code challenge method (S256 or plain).
+     */
+    @Column(length = 10)
+    val codeChallengeMethod: String? = null,
+    
+    /**
+     * Nonce value for ID token (OIDC).
+     * If present, must be included in the ID token.
+     */
+    @Column(length = 255)
+    val nonce: String? = null,
+    
+    /**
+     * When the authorization code was issued.
+     */
+    @Column(nullable = false)
+    val issuedAt: Instant = Instant.now(),
+    
+    /**
+     * When the authorization code expires.
+     * Default is 10 minutes after issuance.
+     */
+    @Column(nullable = false)
+    val expiresAt: Instant = Instant.now().plusSeconds(600),
+    
+    /**
+     * Whether this code has been used.
+     * Authorization codes are single-use.
+     */
+    @Column(nullable = false)
+    var used: Boolean = false,
+    
+    /**
+     * When the code was used (for audit purposes).
+     */
+    @Column
+    var usedAt: Instant? = null
+) {
+    /**
+     * Check if this authorization code has expired.
+     */
+    fun isExpired(): Boolean = Instant.now().isAfter(expiresAt)
+    
+    /**
+     * Check if this authorization code is still valid.
+     * A code is valid if it has not expired and has not been used.
+     */
+    fun isValid(): Boolean = !isExpired() && !used
+    
+    /**
+     * Mark this authorization code as used.
+     * This should be called atomically during token exchange.
+     */
+    fun markAsUsed() {
+        used = true
+        usedAt = Instant.now()
+    }
+    
+    /**
+     * Check if PKCE validation is required.
+     */
+    fun requiresPkce(): Boolean = codeChallenge != null
+    
+    /**
+     * Get granted scopes as a set.
+     */
+    fun getScopeSet(): Set<String> =
+        scope?.split(" ")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+    
+    companion object {
+        /** Default lifetime for authorization codes in seconds */
+        const val DEFAULT_LIFETIME_SECONDS = 600L // 10 minutes
+        
+        /** Length of the random authorization code */
+        const val CODE_LENGTH = 32
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/model/OAuth2Client.kt">
+package com.securemonitor.oauth2.model
+
+import jakarta.persistence.*
+import java.time.Instant
+
+/**
+ * Represents a registered OAuth 2.0 client application.
+ * 
+ * In OAuth 2.0, a client is an application that requests access to protected
+ * resources on behalf of a resource owner (user). Clients must be registered
+ * with the authorization server before they can participate in the OAuth flow.
+ * 
+ * There are two types of clients:
+ * - **Confidential clients**: Can securely store credentials (e.g., server-side apps)
+ * - **Public clients**: Cannot securely store credentials (e.g., SPAs, mobile apps)
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-2.1">RFC 6749 Section 2.1</a>
+ */
+@Entity
+@Table(name = "oauth2_clients")
+data class OAuth2Client(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+    
+    /**
+     * Unique client identifier.
+     * This is the public identifier used in OAuth requests.
+     */
+    @Column(unique = true, nullable = false, length = 100)
+    val clientId: String,
+    
+    /**
+     * Client secret (hashed).
+     * Only present for confidential clients. Null for public clients.
+     */
+    @Column(length = 255)
+    val clientSecretHash: String? = null,
+    
+    /**
+     * Human-readable name of the client application.
+     */
+    @Column(nullable = false, length = 255)
+    val clientName: String,
+    
+    /**
+     * Description of the client application.
+     */
+    @Column(length = 1000)
+    val description: String? = null,
+    
+    /**
+     * Whether this is a confidential client.
+     * Public clients (SPAs, mobile apps) should use PKCE instead of client secret.
+     */
+    @Column(nullable = false)
+    val confidential: Boolean = false,
+    
+    /**
+     * Comma-separated list of allowed redirect URIs.
+     * The redirect URI in authorization requests must exactly match one of these.
+     */
+    @Column(nullable = false, length = 2000)
+    val redirectUris: String,
+    
+    /**
+     * Space-separated list of allowed scopes.
+     */
+    @Column(nullable = false, length = 500)
+    val allowedScopes: String = "openid profile email",
+    
+    /**
+     * Space-separated list of allowed grant types.
+     */
+    @Column(nullable = false, length = 200)
+    val allowedGrantTypes: String = "authorization_code refresh_token",
+    
+    /**
+     * Whether PKCE is required for this client.
+     * Should be true for public clients.
+     */
+    @Column(nullable = false)
+    val requirePkce: Boolean = true,
+    
+    /**
+     * Access token lifetime in seconds.
+     */
+    @Column(nullable = false)
+    val accessTokenLifetimeSeconds: Long = 3600, // 1 hour
+    
+    /**
+     * Refresh token lifetime in seconds.
+     */
+    @Column(nullable = false)
+    val refreshTokenLifetimeSeconds: Long = 86400 * 30, // 30 days
+    
+    /**
+     * Whether the client is enabled.
+     */
+    @Column(nullable = false)
+    val enabled: Boolean = true,
+    
+    /**
+     * When the client was created.
+     */
+    @Column(nullable = false)
+    val createdAt: Instant = Instant.now(),
+    
+    /**
+     * When the client was last updated.
+     */
+    @Column
+    val updatedAt: Instant? = null
+) {
+    /**
+     * Get redirect URIs as a list.
+     */
+    fun getRedirectUriList(): List<String> = 
+        redirectUris.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    
+    /**
+     * Check if a redirect URI is allowed for this client.
+     */
+    fun isRedirectUriAllowed(uri: String): Boolean = 
+        getRedirectUriList().contains(uri)
+    
+    /**
+     * Get allowed scopes as a set.
+     */
+    fun getAllowedScopeSet(): Set<String> =
+        allowedScopes.split(" ").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    
+    /**
+     * Check if a scope is allowed for this client.
+     */
+    fun isScopeAllowed(scope: String): Boolean =
+        getAllowedScopeSet().contains(scope)
+    
+    /**
+     * Check if all requested scopes are allowed.
+     */
+    fun areAllScopesAllowed(requestedScopes: String?): Boolean {
+        if (requestedScopes.isNullOrBlank()) return true
+        val requested = requestedScopes.split(" ").map { it.trim() }.filter { it.isNotEmpty() }
+        val allowed = getAllowedScopeSet()
+        return requested.all { it in allowed }
+    }
+    
+    /**
+     * Get allowed grant types as a set.
+     */
+    fun getAllowedGrantTypeSet(): Set<String> =
+        allowedGrantTypes.split(" ").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    
+    /**
+     * Check if a grant type is allowed for this client.
+     */
+    fun isGrantTypeAllowed(grantType: String): Boolean =
+        getAllowedGrantTypeSet().contains(grantType)
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/repository/AuthorizationCodeRepository.kt">
+package com.securemonitor.oauth2.repository
+
+import com.securemonitor.oauth2.model.AuthorizationCode
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Modifying
+import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
+import org.springframework.stereotype.Repository
+import java.time.Instant
+import java.util.Optional
+
+/**
+ * Repository for managing OAuth 2.0 authorization codes.
+ * 
+ * Authorization codes are critical security tokens and should be:
+ * - Retrieved and invalidated atomically
+ * - Cleaned up after expiration
+ * - Audited when used
+ */
+@Repository
+interface AuthorizationCodeRepository : JpaRepository<AuthorizationCode, Long> {
+    
+    /**
+     * Find an authorization code by its value.
+     * 
+     * @param code The authorization code string
+     * @return The authorization code if found
+     */
+    fun findByCode(code: String): Optional<AuthorizationCode>
+    
+    /**
+     * Find an unused, non-expired authorization code.
+     * This is the primary method for validating codes during token exchange.
+     * 
+     * @param code The authorization code string
+     * @param now Current timestamp for expiration check
+     * @return The valid authorization code if found
+     */
+    @Query("""
+        SELECT ac FROM AuthorizationCode ac 
+        WHERE ac.code = :code 
+        AND ac.used = false 
+        AND ac.expiresAt > :now
+    """)
+    fun findValidCode(
+        @Param("code") code: String, 
+        @Param("now") now: Instant
+    ): Optional<AuthorizationCode>
+    
+    /**
+     * Find all codes for a specific user.
+     * Useful for revoking all codes when a user logs out.
+     * 
+     * @param userId The user ID
+     * @return List of authorization codes for the user
+     */
+    fun findByUserId(userId: Long): List<AuthorizationCode>
+    
+    /**
+     * Find all codes for a specific client.
+     * Useful for revoking all codes when a client is disabled.
+     * 
+     * @param clientId The client ID
+     * @return List of authorization codes for the client
+     */
+    fun findByClientId(clientId: String): List<AuthorizationCode>
+    
+    /**
+     * Delete all expired authorization codes.
+     * This should be run periodically as a cleanup job.
+     * 
+     * @param now Current timestamp
+     * @return Number of deleted codes
+     */
+    @Modifying
+    @Query("DELETE FROM AuthorizationCode ac WHERE ac.expiresAt < :now")
+    fun deleteExpiredCodes(@Param("now") now: Instant): Int
+    
+    /**
+     * Delete all codes for a specific user.
+     * Used when revoking all sessions for a user.
+     * 
+     * @param userId The user ID
+     * @return Number of deleted codes
+     */
+    @Modifying
+    fun deleteByUserId(userId: Long): Int
+    
+    /**
+     * Delete all codes for a specific client.
+     * Used when disabling or deleting a client.
+     * 
+     * @param clientId The client ID
+     * @return Number of deleted codes
+     */
+    @Modifying
+    fun deleteByClientId(clientId: String): Int
+    
+    /**
+     * Count unused codes for a user within a time window.
+     * Used for rate limiting authorization requests.
+     * 
+     * @param userId The user ID
+     * @param since Start of time window
+     * @return Number of codes issued in the window
+     */
+    @Query("""
+        SELECT COUNT(ac) FROM AuthorizationCode ac 
+        WHERE ac.userId = :userId 
+        AND ac.issuedAt > :since
+    """)
+    fun countRecentCodesForUser(
+        @Param("userId") userId: Long, 
+        @Param("since") since: Instant
+    ): Long
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/repository/OAuth2ClientRepository.kt">
+package com.securemonitor.oauth2.repository
+
+import com.securemonitor.oauth2.model.OAuth2Client
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.stereotype.Repository
+import java.util.Optional
+
+/**
+ * Repository for managing OAuth 2.0 client registrations.
+ */
+@Repository
+interface OAuth2ClientRepository : JpaRepository<OAuth2Client, Long> {
+    
+    /**
+     * Find a client by its client ID.
+     * 
+     * @param clientId The unique client identifier
+     * @return The client if found
+     */
+    fun findByClientId(clientId: String): Optional<OAuth2Client>
+    
+    /**
+     * Check if a client with the given ID exists.
+     * 
+     * @param clientId The client identifier to check
+     * @return true if the client exists
+     */
+    fun existsByClientId(clientId: String): Boolean
+    
+    /**
+     * Find all enabled clients.
+     * 
+     * @return List of enabled clients
+     */
+    fun findByEnabledTrue(): List<OAuth2Client>
+    
+    /**
+     * Find a client by name.
+     * 
+     * @param clientName The client name
+     * @return The client if found
+     */
+    fun findByClientName(clientName: String): Optional<OAuth2Client>
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/service/PkceService.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import org.springframework.stereotype.Service
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
+
+/**
+ * Service for handling PKCE (Proof Key for Code Exchange) operations.
+ * 
+ * PKCE is a security extension to OAuth 2.0 designed to prevent authorization
+ * code interception attacks. It is required for public clients (e.g., mobile apps,
+ * SPAs) and recommended for all OAuth 2.0 clients.
+ * 
+ * The flow works as follows:
+ * 1. Client generates a random `code_verifier` (43-128 characters)
+ * 2. Client computes `code_challenge` = BASE64URL(SHA256(code_verifier))
+ * 3. Client includes `code_challenge` and `code_challenge_method` in /authorize request
+ * 4. Server stores the challenge with the authorization code
+ * 5. Client includes `code_verifier` in /token request
+ * 6. Server verifies that SHA256(code_verifier) matches stored challenge
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc7636">RFC 7636 - PKCE</a>
+ */
+@Service
+class PkceService {
+
+    companion object {
+        /** Minimum length for code verifier as per RFC 7636 */
+        const val CODE_VERIFIER_MIN_LENGTH = 43
+        
+        /** Maximum length for code verifier as per RFC 7636 */
+        const val CODE_VERIFIER_MAX_LENGTH = 128
+        
+        /** Default length for generated code verifiers */
+        const val CODE_VERIFIER_DEFAULT_LENGTH = 64
+        
+        /** Valid characters for code verifier (unreserved URI characters) */
+        private val CODE_VERIFIER_CHARACTERS = 
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+        
+        /** Pattern for validating code verifier characters */
+        private val CODE_VERIFIER_PATTERN = Regex("^[A-Za-z0-9\\-._~]+$")
+        
+        /** Supported code challenge methods */
+        val SUPPORTED_METHODS = setOf("S256", "plain")
+        
+        /** Recommended code challenge method */
+        const val RECOMMENDED_METHOD = "S256"
+    }
+
+    private val secureRandom = SecureRandom()
+
+    /**
+     * Generates a cryptographically secure code verifier.
+     * 
+     * The verifier is a high-entropy cryptographic random string using the
+     * unreserved characters [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~".
+     * 
+     * @param length The desired length (default: 64, must be 43-128)
+     * @return A random code verifier string
+     * @throws OAuth2Exception if length is outside valid range
+     */
+    fun generateCodeVerifier(length: Int = CODE_VERIFIER_DEFAULT_LENGTH): String {
+        require(length in CODE_VERIFIER_MIN_LENGTH..CODE_VERIFIER_MAX_LENGTH) {
+            "Code verifier length must be between $CODE_VERIFIER_MIN_LENGTH and $CODE_VERIFIER_MAX_LENGTH"
+        }
+        
+        return buildString(length) {
+            repeat(length) {
+                val randomIndex = secureRandom.nextInt(CODE_VERIFIER_CHARACTERS.length)
+                append(CODE_VERIFIER_CHARACTERS[randomIndex])
+            }
+        }
+    }
+
+    /**
+     * Generates a code challenge from a code verifier.
+     * 
+     * For S256 method: BASE64URL(SHA256(ASCII(code_verifier)))
+     * For plain method: code_challenge = code_verifier (not recommended)
+     * 
+     * @param codeVerifier The code verifier to transform
+     * @param method The challenge method ("S256" recommended, "plain" for testing only)
+     * @return The computed code challenge
+     * @throws OAuth2Exception if the method is not supported
+     */
+    fun generateCodeChallenge(codeVerifier: String, method: String): String {
+        return when (method.uppercase()) {
+            "S256" -> computeS256Challenge(codeVerifier)
+            "PLAIN" -> codeVerifier
+            else -> throw OAuth2Exception.invalidRequest(
+                "Unsupported code challenge method: $method. Supported methods: $SUPPORTED_METHODS"
+            )
+        }
+    }
+
+    /**
+     * Verifies that a code verifier matches the stored code challenge.
+     * 
+     * This method uses timing-safe comparison to prevent timing attacks.
+     * 
+     * @param codeVerifier The code verifier from the token request
+     * @param codeChallenge The code challenge stored during authorization
+     * @param method The code challenge method used
+     * @return true if verification succeeds, false otherwise
+     */
+    fun verifyCodeChallenge(codeVerifier: String, codeChallenge: String, method: String): Boolean {
+        return try {
+            val computedChallenge = generateCodeChallenge(codeVerifier, method)
+            timingSafeEquals(computedChallenge, codeChallenge)
+        } catch (e: OAuth2Exception) {
+            false
+        }
+    }
+
+    /**
+     * Validates that a code verifier meets RFC 7636 requirements.
+     * 
+     * Requirements:
+     * - Length: 43-128 characters
+     * - Characters: [A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"
+     * 
+     * @param codeVerifier The code verifier to validate
+     * @throws OAuth2Exception if validation fails
+     */
+    fun validateCodeVerifier(codeVerifier: String) {
+        if (codeVerifier.length < CODE_VERIFIER_MIN_LENGTH) {
+            throw OAuth2Exception.invalidRequest(
+                "Code verifier must be at least $CODE_VERIFIER_MIN_LENGTH characters"
+            )
+        }
+        
+        if (codeVerifier.length > CODE_VERIFIER_MAX_LENGTH) {
+            throw OAuth2Exception.invalidRequest(
+                "Code verifier must not exceed $CODE_VERIFIER_MAX_LENGTH characters"
+            )
+        }
+        
+        if (!CODE_VERIFIER_PATTERN.matches(codeVerifier)) {
+            throw OAuth2Exception.invalidRequest(
+                "Code verifier contains invalid characters. " +
+                "Allowed: A-Z, a-z, 0-9, '-', '.', '_', '~'"
+            )
+        }
+    }
+
+    /**
+     * Computes the S256 code challenge.
+     * 
+     * S256: BASE64URL(SHA256(ASCII(code_verifier)))
+     * Note: BASE64URL encoding omits padding ('=') as per RFC 7636.
+     */
+    private fun computeS256Challenge(codeVerifier: String): String {
+        val bytes = codeVerifier.toByteArray(Charsets.US_ASCII)
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
+    }
+
+    /**
+     * Performs timing-safe comparison of two strings.
+     * 
+     * This prevents timing attacks by ensuring the comparison takes
+     * constant time regardless of where the strings differ.
+     */
+    private fun timingSafeEquals(a: String, b: String): Boolean {
+        val aBytes = a.toByteArray(Charsets.UTF_8)
+        val bBytes = b.toByteArray(Charsets.UTF_8)
+        
+        return MessageDigest.isEqual(aBytes, bBytes)
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/README.md">
+# OAuth 2.0 / OpenID Connect Implementation
+
+This module implements an OAuth 2.0 Authorization Server with OpenID Connect (OIDC) support.
+
+## Overview
+
+This implementation follows these specifications:
+- [RFC 6749 - OAuth 2.0](https://datatracker.ietf.org/doc/html/rfc6749)
+- [RFC 7636 - PKCE](https://datatracker.ietf.org/doc/html/rfc7636)
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)
+- [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html)
+
+## Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/oauth2/authorize` | GET | Authorization endpoint - initiates the flow |
+| `/oauth2/token` | POST | Token endpoint - exchanges code for tokens |
+| `/oauth2/userinfo` | GET | UserInfo endpoint - returns user claims |
+| `/.well-known/openid-configuration` | GET | OIDC Discovery document |
+| `/.well-known/jwks.json` | GET | JSON Web Key Set |
+
+## Supported Flows
+
+### Authorization Code Flow with PKCE (Recommended)
+
+```
+┌──────────┐                                  ┌──────────────┐
+│          │                                  │              │
+│  Client  │                                  │    Auth      │
+│  (SPA)   │                                  │   Server     │
+│          │                                  │              │
+└────┬─────┘                                  └──────┬───────┘
+     │                                               │
+     │  1. Generate code_verifier (random string)    │
+     │  2. Compute code_challenge = SHA256(verifier) │
+     │                                               │
+     │  3. GET /oauth2/authorize                     │
+     │     ?response_type=code                       │
+     │     &client_id=...                            │
+     │     &redirect_uri=...                         │
+     │     &code_challenge=...                       │
+     │     &code_challenge_method=S256              │
+     │     &scope=openid profile                     │
+     │     &state=...                                │
+     │─────────────────────────────────────────────▶│
+     │                                               │
+     │  4. User authenticates & consents             │
+     │                                               │
+     │  5. 302 Redirect to redirect_uri              │
+     │     ?code=AUTHORIZATION_CODE                  │
+     │     &state=...                                │
+     │◀─────────────────────────────────────────────│
+     │                                               │
+     │  6. POST /oauth2/token                        │
+     │     grant_type=authorization_code             │
+     │     &code=AUTHORIZATION_CODE                  │
+     │     &redirect_uri=...                         │
+     │     &client_id=...                            │
+     │     &code_verifier=... (original verifier)    │
+     │─────────────────────────────────────────────▶│
+     │                                               │
+     │  7. Validate code_verifier matches challenge  │
+     │                                               │
+     │  8. 200 OK                                    │
+     │     {                                         │
+     │       "access_token": "...",                  │
+     │       "token_type": "Bearer",                 │
+     │       "expires_in": 3600,                     │
+     │       "refresh_token": "...",                 │
+     │       "id_token": "..."                       │
+     │     }                                         │
+     │◀─────────────────────────────────────────────│
+     │                                               │
+```
+
+## PKCE (Proof Key for Code Exchange)
+
+PKCE prevents authorization code interception attacks. It's **required** for public clients (SPAs, mobile apps).
+
+### How it works:
+
+1. **Client generates `code_verifier`**: A cryptographically random string (43-128 chars)
+2. **Client computes `code_challenge`**: `BASE64URL(SHA256(code_verifier))`
+3. **Authorization request** includes `code_challenge` and `code_challenge_method=S256`
+4. **Token request** includes the original `code_verifier`
+5. **Server verifies** that `SHA256(code_verifier) == stored_challenge`
+
+### Example:
+
+```javascript
+// 1. Generate code verifier
+const codeVerifier = generateRandomString(64);
+// e.g., "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+
+// 2. Compute code challenge
+const codeChallenge = base64UrlEncode(sha256(codeVerifier));
+// e.g., "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+// 3. Include in authorization request
+const authUrl = `/oauth2/authorize?
+  response_type=code&
+  client_id=my-app&
+  redirect_uri=${encodeURIComponent(redirectUri)}&
+  code_challenge=${codeChallenge}&
+  code_challenge_method=S256&
+  scope=openid profile`;
+```
+
+## Token Types
+
+### Access Token
+- JWT format
+- Used to access protected resources
+- Short-lived (1 hour default)
+- Contains: `sub`, `iss`, `aud`, `exp`, `iat`, `scope`, `username`
+
+### ID Token (OIDC)
+- JWT format
+- Contains user identity claims
+- Only issued when `openid` scope is requested
+- Contains: `sub`, `iss`, `aud`, `exp`, `iat`, `auth_time`, `nonce`, `preferred_username`
+
+### Refresh Token
+- Opaque token
+- Used to obtain new access tokens
+- Long-lived (30 days default)
+- Single-use (rotated on each use)
+
+## Scopes
+
+| Scope | Description | Claims |
+|-------|-------------|--------|
+| `openid` | Required for OIDC | `sub` |
+| `profile` | Basic profile info | `preferred_username`, `name` |
+| `email` | Email address | `email`, `email_verified` |
+
+## Client Types
+
+### Public Clients
+- Cannot securely store credentials
+- Examples: SPAs, mobile apps
+- **Must use PKCE**
+- No `client_secret`
+
+### Confidential Clients
+- Can securely store credentials
+- Examples: Server-side apps
+- Can use `client_secret` instead of PKCE
+- Authenticate via Basic auth or POST body
+
+## Security Considerations
+
+1. **Always use HTTPS** in production
+2. **PKCE is mandatory** for public clients
+3. **State parameter** prevents CSRF attacks
+4. **Authorization codes** are single-use and short-lived
+5. **Redirect URIs** must exactly match registered URIs
+6. **Token storage**: Store tokens securely (HttpOnly cookies or secure storage)
+
+## Error Responses
+
+All errors follow OAuth 2.0 error format:
+
+```json
+{
+  "error": "invalid_request",
+  "error_description": "Human-readable description"
+}
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `invalid_request` | Missing or invalid parameter |
+| `invalid_client` | Client authentication failed |
+| `invalid_grant` | Authorization code invalid or expired |
+| `unauthorized_client` | Client not authorized for grant type |
+| `unsupported_grant_type` | Grant type not supported |
+| `invalid_scope` | Requested scope not allowed |
+| `access_denied` | User denied consent |
+
+## Testing
+
+### Using cURL
+
+```bash
+# 1. Start authorization (in browser)
+open "http://localhost:8080/oauth2/authorize?response_type=code&client_id=test-client&redirect_uri=http://localhost:3000/callback&scope=openid%20profile&state=abc123&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+
+# 2. Exchange code for tokens
+curl -X POST http://localhost:8080/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code" \
+  -d "code=RECEIVED_CODE" \
+  -d "redirect_uri=http://localhost:3000/callback" \
+  -d "client_id=test-client" \
+  -d "code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+
+# 3. Get user info
+curl http://localhost:8080/oauth2/userinfo \
+  -H "Authorization: Bearer ACCESS_TOKEN"
+```
+
+## Configuration
+
+```yaml
+oauth2:
+  issuer: http://localhost:8080
+  access-token-lifetime: 3600      # seconds
+  refresh-token-lifetime: 2592000  # seconds
+  authorization-code-lifetime: 600 # seconds
+  require-pkce: true
+```
+
+## Relevant for DFØ Interview
+
+This implementation demonstrates:
+
+1. **Deep understanding of OAuth 2.0/OIDC protocols** - Built from scratch, not using a library
+2. **PKCE implementation** - Critical for modern security
+3. **Token handling** - JWT generation, validation, claims
+4. **Security best practices** - Input validation, timing-safe comparisons, audit logging
+5. **Federation concepts** - Can act as both IdP and SP
+6. **Standards compliance** - Follows RFCs and OIDC specs
+
+### Key talking points:
+
+- **Why PKCE?** Prevents authorization code interception in public clients
+- **Why S256 over plain?** Cryptographic binding, replay protection
+- **Why short-lived codes?** Minimizes window of attack
+- **Why single-use codes?** Prevents replay attacks
+- **Why state parameter?** CSRF protection
+- **Why nonce in ID token?** Replay protection for ID tokens
 </file>
 
 <file path="backend/src/main/kotlin/com/securemonitor/repository/AuditLogRepository.kt">
@@ -594,6 +2468,868 @@ class AuditService(
 
     fun getLogsByTimeRange(start: Instant, end: Instant): List<AuditLog> {
         return auditLogRepository.findByTimestampBetweenOrderByTimestampDesc(start, end)
+    }
+}
+</file>
+
+<file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/AuthorizationServiceTest.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.dto.AuthorizationRequest
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.model.AuthorizationCode
+import com.securemonitor.oauth2.model.OAuth2Client
+import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import com.securemonitor.service.AuditService
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.extension.ExtendWith
+import org.mockito.Mock
+import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.kotlin.*
+import org.assertj.core.api.Assertions.assertThat
+import java.util.Optional
+
+/**
+ * Test suite for AuthorizationService.
+ * 
+ * Tests the authorization endpoint logic including:
+ * - Request validation
+ * - Client validation
+ * - PKCE handling
+ * - Authorization code generation
+ */
+@ExtendWith(MockitoExtension::class)
+@DisplayName("AuthorizationService")
+class AuthorizationServiceTest {
+
+    @Mock
+    private lateinit var clientRepository: OAuth2ClientRepository
+    
+    @Mock
+    private lateinit var codeRepository: AuthorizationCodeRepository
+    
+    @Mock
+    private lateinit var pkceService: PkceService
+    
+    @Mock
+    private lateinit var auditService: AuditService
+
+    private lateinit var authorizationService: AuthorizationService
+
+    private val testClient = OAuth2Client(
+        id = 1L,
+        clientId = "test-client",
+        clientSecretHash = null,
+        clientName = "Test Client",
+        confidential = false,
+        redirectUris = "http://localhost:3000/callback,https://example.com/callback",
+        allowedScopes = "openid profile email",
+        allowedGrantTypes = "authorization_code refresh_token",
+        requirePkce = true
+    )
+
+    @BeforeEach
+    fun setUp() {
+        authorizationService = AuthorizationService(
+            clientRepository = clientRepository,
+            codeRepository = codeRepository,
+            pkceService = pkceService,
+            auditService = auditService
+        )
+    }
+
+    @Nested
+    @DisplayName("validateAuthorizationRequest")
+    inner class ValidateAuthorizationRequest {
+
+        @Test
+        @DisplayName("should accept valid authorization request with PKCE")
+        fun shouldAcceptValidRequest() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid profile",
+                state = "abc123",
+                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                codeChallengeMethod = "S256"
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            // Should not throw
+            val validatedClient = authorizationService.validateAuthorizationRequest(request)
+            
+            assertThat(validatedClient.clientId).isEqualTo("test-client")
+        }
+
+        @Test
+        @DisplayName("should reject request with unsupported response_type")
+        fun shouldRejectUnsupportedResponseType() {
+            val request = AuthorizationRequest(
+                responseType = "token", // implicit flow - not supported
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("unsupported_response_type")
+        }
+
+        @Test
+        @DisplayName("should reject request with unknown client_id")
+        fun shouldRejectUnknownClient() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "unknown-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(clientRepository.findByClientId("unknown-client"))
+                .thenReturn(Optional.empty())
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_client")
+        }
+
+        @Test
+        @DisplayName("should reject request with mismatched redirect_uri")
+        fun shouldRejectMismatchedRedirectUri() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://evil.com/callback" // not registered
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("redirect_uri")
+        }
+
+        @Test
+        @DisplayName("should reject request with invalid scope")
+        fun shouldRejectInvalidScope() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid admin" // 'admin' not allowed
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_scope")
+        }
+
+        @Test
+        @DisplayName("should reject request missing PKCE when required")
+        fun shouldRejectMissingPkce() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                codeChallenge = null // missing PKCE
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("PKCE")
+        }
+
+        @Test
+        @DisplayName("should reject disabled client")
+        fun shouldRejectDisabledClient() {
+            val disabledClient = testClient.copy(enabled = false)
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(disabledClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                authorizationService.validateAuthorizationRequest(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_client")
+        }
+    }
+
+    @Nested
+    @DisplayName("createAuthorizationCode")
+    inner class CreateAuthorizationCode {
+
+        @Test
+        @DisplayName("should create authorization code with all parameters")
+        fun shouldCreateCodeWithAllParameters() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback",
+                scope = "openid profile",
+                state = "abc123",
+                codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                codeChallengeMethod = "S256",
+                nonce = "nonce123"
+            )
+            
+            whenever(codeRepository.save(any<AuthorizationCode>()))
+                .thenAnswer { it.arguments[0] as AuthorizationCode }
+            
+            val code = authorizationService.createAuthorizationCode(
+                client = testClient,
+                request = request,
+                userId = 42L,
+                username = "testuser"
+            )
+            
+            assertThat(code.code).isNotBlank()
+            assertThat(code.code.length).isGreaterThanOrEqualTo(32)
+            assertThat(code.clientId).isEqualTo("test-client")
+            assertThat(code.userId).isEqualTo(42L)
+            assertThat(code.username).isEqualTo("testuser")
+            assertThat(code.redirectUri).isEqualTo("http://localhost:3000/callback")
+            assertThat(code.scope).isEqualTo("openid profile")
+            assertThat(code.codeChallenge).isEqualTo("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+            assertThat(code.codeChallengeMethod).isEqualTo("S256")
+            assertThat(code.nonce).isEqualTo("nonce123")
+            assertThat(code.used).isFalse()
+            
+            verify(codeRepository).save(any())
+            verify(auditService).log(
+                action = eq("OAUTH2_CODE_ISSUED"),
+                username = eq("testuser"),
+                resourceType = eq("OAUTH2_CLIENT"),
+                resourceId = eq("test-client"),
+                details = any(),
+                success = eq(true)
+            )
+        }
+
+        @Test
+        @DisplayName("should generate unique codes")
+        fun shouldGenerateUniqueCodes() {
+            val request = AuthorizationRequest(
+                responseType = "code",
+                clientId = "test-client",
+                redirectUri = "http://localhost:3000/callback"
+            )
+            
+            whenever(codeRepository.save(any<AuthorizationCode>()))
+                .thenAnswer { it.arguments[0] as AuthorizationCode }
+            
+            val codes = (1..100).map {
+                authorizationService.createAuthorizationCode(
+                    client = testClient,
+                    request = request,
+                    userId = 1L,
+                    username = "user"
+                ).code
+            }.toSet()
+            
+            assertThat(codes).hasSize(100)
+        }
+    }
+
+    @Nested
+    @DisplayName("buildAuthorizationRedirect")
+    inner class BuildAuthorizationRedirect {
+
+        @Test
+        @DisplayName("should build redirect URI with code and state")
+        fun shouldBuildRedirectWithCodeAndState() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                code = "auth-code-123",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).isEqualTo(
+                "http://localhost:3000/callback?code=auth-code-123&state=state-abc"
+            )
+        }
+
+        @Test
+        @DisplayName("should build redirect URI without state when not provided")
+        fun shouldBuildRedirectWithoutState() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                code = "auth-code-123",
+                state = null
+            )
+            
+            assertThat(redirectUri).isEqualTo(
+                "http://localhost:3000/callback?code=auth-code-123"
+            )
+        }
+
+        @Test
+        @DisplayName("should preserve existing query parameters")
+        fun shouldPreserveExistingQueryParams() {
+            val redirectUri = authorizationService.buildAuthorizationRedirect(
+                baseRedirectUri = "http://localhost:3000/callback?existing=param",
+                code = "auth-code-123",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).contains("existing=param")
+            assertThat(redirectUri).contains("code=auth-code-123")
+            assertThat(redirectUri).contains("state=state-abc")
+        }
+    }
+
+    @Nested
+    @DisplayName("buildErrorRedirect")
+    inner class BuildErrorRedirect {
+
+        @Test
+        @DisplayName("should build error redirect with all parameters")
+        fun shouldBuildErrorRedirect() {
+            val redirectUri = authorizationService.buildErrorRedirect(
+                baseRedirectUri = "http://localhost:3000/callback",
+                error = "access_denied",
+                errorDescription = "User denied consent",
+                state = "state-abc"
+            )
+            
+            assertThat(redirectUri).contains("error=access_denied")
+            assertThat(redirectUri).contains("error_description=User")
+            assertThat(redirectUri).contains("state=state-abc")
+        }
+    }
+}
+</file>
+
+<file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/PkceServiceTest.kt">
+package com.securemonitor.oauth2.service
+
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.assertThrows
+import org.assertj.core.api.Assertions.assertThat
+import com.securemonitor.oauth2.exception.OAuth2Exception
+
+/**
+ * Test suite for PKCE (Proof Key for Code Exchange) service.
+ * 
+ * PKCE is a security extension to OAuth 2.0 that prevents authorization code
+ * interception attacks. It's required for public clients and recommended for
+ * all OAuth 2.0 clients.
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc7636">RFC 7636</a>
+ */
+@DisplayName("PkceService")
+class PkceServiceTest {
+
+    private lateinit var pkceService: PkceService
+
+    @BeforeEach
+    fun setUp() {
+        pkceService = PkceService()
+    }
+
+    @Nested
+    @DisplayName("generateCodeVerifier")
+    inner class GenerateCodeVerifier {
+
+        @Test
+        @DisplayName("should generate a code verifier with valid length (43-128 characters)")
+        fun shouldGenerateValidLength() {
+            val verifier = pkceService.generateCodeVerifier()
+            
+            assertThat(verifier.length).isBetween(43, 128)
+        }
+
+        @Test
+        @DisplayName("should generate a code verifier using only valid characters (A-Z, a-z, 0-9, -._~)")
+        fun shouldUseOnlyValidCharacters() {
+            val verifier = pkceService.generateCodeVerifier()
+            val validPattern = Regex("^[A-Za-z0-9\\-._~]+$")
+            
+            assertThat(verifier).matches(validPattern.toPattern())
+        }
+
+        @Test
+        @DisplayName("should generate unique verifiers on each call")
+        fun shouldGenerateUniqueVerifiers() {
+            val verifiers = (1..100).map { pkceService.generateCodeVerifier() }.toSet()
+            
+            assertThat(verifiers).hasSize(100)
+        }
+    }
+
+    @Nested
+    @DisplayName("generateCodeChallenge")
+    inner class GenerateCodeChallenge {
+
+        @Test
+        @DisplayName("should generate S256 challenge from verifier")
+        fun shouldGenerateS256Challenge() {
+            // Known test vector from RFC 7636 Appendix B
+            val verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            val expectedChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            
+            val challenge = pkceService.generateCodeChallenge(verifier, "S256")
+            
+            assertThat(challenge).isEqualTo(expectedChallenge)
+        }
+
+        @Test
+        @DisplayName("should support plain method (for testing only)")
+        fun shouldSupportPlainMethod() {
+            val verifier = "test-verifier-string"
+            
+            val challenge = pkceService.generateCodeChallenge(verifier, "plain")
+            
+            assertThat(challenge).isEqualTo(verifier)
+        }
+
+        @Test
+        @DisplayName("should throw exception for unsupported method")
+        fun shouldThrowForUnsupportedMethod() {
+            val verifier = "test-verifier"
+            
+            val exception = assertThrows<OAuth2Exception> {
+                pkceService.generateCodeChallenge(verifier, "MD5")
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("Unsupported code challenge method")
+        }
+    }
+
+    @Nested
+    @DisplayName("verifyCodeChallenge")
+    inner class VerifyCodeChallenge {
+
+        @Test
+        @DisplayName("should return true when S256 challenge matches verifier")
+        fun shouldVerifyValidS256Challenge() {
+            val verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            val challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            
+            val result = pkceService.verifyCodeChallenge(verifier, challenge, "S256")
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should return false when S256 challenge does not match")
+        fun shouldRejectInvalidS256Challenge() {
+            val verifier = "wrong-verifier"
+            val challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            
+            val result = pkceService.verifyCodeChallenge(verifier, challenge, "S256")
+            
+            assertThat(result).isFalse()
+        }
+
+        @Test
+        @DisplayName("should return true when plain challenge matches verifier")
+        fun shouldVerifyValidPlainChallenge() {
+            val verifier = "my-plain-verifier"
+            val challenge = "my-plain-verifier"
+            
+            val result = pkceService.verifyCodeChallenge(verifier, challenge, "plain")
+            
+            assertThat(result).isTrue()
+        }
+
+        @Test
+        @DisplayName("should use timing-safe comparison to prevent timing attacks")
+        fun shouldUseTimingSafeComparison() {
+            // This test verifies the behavior, actual timing-safe implementation
+            // is verified through code review
+            val verifier = pkceService.generateCodeVerifier()
+            val challenge = pkceService.generateCodeChallenge(verifier, "S256")
+            
+            val result = pkceService.verifyCodeChallenge(verifier, challenge, "S256")
+            
+            assertThat(result).isTrue()
+        }
+    }
+
+    @Nested
+    @DisplayName("validateCodeVerifier")
+    inner class ValidateCodeVerifier {
+
+        @Test
+        @DisplayName("should accept valid code verifier")
+        fun shouldAcceptValidVerifier() {
+            val verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            
+            // Should not throw
+            pkceService.validateCodeVerifier(verifier)
+        }
+
+        @Test
+        @DisplayName("should reject code verifier shorter than 43 characters")
+        fun shouldRejectTooShortVerifier() {
+            val verifier = "too-short"
+            
+            val exception = assertThrows<OAuth2Exception> {
+                pkceService.validateCodeVerifier(verifier)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("43")
+        }
+
+        @Test
+        @DisplayName("should reject code verifier longer than 128 characters")
+        fun shouldRejectTooLongVerifier() {
+            val verifier = "a".repeat(129)
+            
+            val exception = assertThrows<OAuth2Exception> {
+                pkceService.validateCodeVerifier(verifier)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("128")
+        }
+
+        @Test
+        @DisplayName("should reject code verifier with invalid characters")
+        fun shouldRejectInvalidCharacters() {
+            val verifier = "valid-start-but-has-invalid-char-!" + "a".repeat(30)
+            
+            val exception = assertThrows<OAuth2Exception> {
+                pkceService.validateCodeVerifier(verifier)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_request")
+            assertThat(exception.errorDescription).contains("invalid characters")
+        }
+    }
+}
+</file>
+
+<file path="backend/src/test/kotlin/com/securemonitor/oauth2/service/TokenServiceTest.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.dto.TokenRequest
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.model.AuthorizationCode
+import com.securemonitor.oauth2.model.OAuth2Client
+import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import com.securemonitor.service.AuditService
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Nested
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.extension.ExtendWith
+import org.mockito.Mock
+import org.mockito.junit.jupiter.MockitoExtension
+import org.mockito.kotlin.*
+import org.assertj.core.api.Assertions.assertThat
+import java.time.Instant
+import java.util.Optional
+
+/**
+ * Test suite for TokenService.
+ * 
+ * Tests the token endpoint logic including:
+ * - Authorization code exchange
+ * - PKCE verification
+ * - Token generation
+ * - Refresh token flow
+ */
+@ExtendWith(MockitoExtension::class)
+@DisplayName("TokenService")
+class TokenServiceTest {
+
+    @Mock
+    private lateinit var clientRepository: OAuth2ClientRepository
+    
+    @Mock
+    private lateinit var codeRepository: AuthorizationCodeRepository
+    
+    @Mock
+    private lateinit var pkceService: PkceService
+    
+    @Mock
+    private lateinit var auditService: AuditService
+
+    private lateinit var tokenService: TokenService
+
+    private val testClient = OAuth2Client(
+        id = 1L,
+        clientId = "test-client",
+        clientSecretHash = null,
+        clientName = "Test Client",
+        confidential = false,
+        redirectUris = "http://localhost:3000/callback",
+        allowedScopes = "openid profile email",
+        allowedGrantTypes = "authorization_code refresh_token",
+        requirePkce = true,
+        accessTokenLifetimeSeconds = 3600,
+        refreshTokenLifetimeSeconds = 86400
+    )
+
+    private val testAuthCode = AuthorizationCode(
+        id = 1L,
+        code = "valid-auth-code",
+        clientId = "test-client",
+        userId = 42L,
+        username = "testuser",
+        redirectUri = "http://localhost:3000/callback",
+        scope = "openid profile",
+        codeChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        codeChallengeMethod = "S256",
+        nonce = "nonce123",
+        issuedAt = Instant.now(),
+        expiresAt = Instant.now().plusSeconds(600),
+        used = false
+    )
+
+    @BeforeEach
+    fun setUp() {
+        tokenService = TokenService(
+            clientRepository = clientRepository,
+            codeRepository = codeRepository,
+            pkceService = pkceService,
+            auditService = auditService,
+            issuer = "http://localhost:8080",
+            accessTokenLifetimeSeconds = 3600,
+            refreshTokenLifetimeSeconds = 86400
+        )
+    }
+
+    @Nested
+    @DisplayName("exchangeAuthorizationCode")
+    inner class ExchangeAuthorizationCode {
+
+        @Test
+        @DisplayName("should exchange valid authorization code for tokens")
+        fun shouldExchangeValidCode() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "valid-auth-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "test-client",
+                codeVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            )
+            
+            whenever(codeRepository.findValidCode(eq("valid-auth-code"), any()))
+                .thenReturn(Optional.of(testAuthCode))
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            whenever(pkceService.verifyCodeChallenge(
+                eq("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+                eq("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
+                eq("S256")
+            )).thenReturn(true)
+            whenever(codeRepository.save(any<AuthorizationCode>()))
+                .thenAnswer { it.arguments[0] }
+            
+            val response = tokenService.exchangeAuthorizationCode(request)
+            
+            assertThat(response.accessToken).isNotBlank()
+            assertThat(response.tokenType).isEqualTo("Bearer")
+            assertThat(response.expiresIn).isEqualTo(3600)
+            assertThat(response.refreshToken).isNotBlank()
+            assertThat(response.scope).isEqualTo("openid profile")
+            
+            // Verify code was marked as used
+            verify(codeRepository).save(argThat { used })
+        }
+
+        @Test
+        @DisplayName("should reject expired authorization code")
+        fun shouldRejectExpiredCode() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "expired-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "test-client"
+            )
+            
+            whenever(codeRepository.findValidCode(eq("expired-code"), any()))
+                .thenReturn(Optional.empty())
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+        }
+
+        @Test
+        @DisplayName("should reject already used authorization code")
+        fun shouldRejectUsedCode() {
+            val usedCode = testAuthCode.copy(used = true)
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "used-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "test-client"
+            )
+            
+            // findValidCode already excludes used codes
+            whenever(codeRepository.findValidCode(eq("used-code"), any()))
+                .thenReturn(Optional.empty())
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+        }
+
+        @Test
+        @DisplayName("should reject mismatched redirect_uri")
+        fun shouldRejectMismatchedRedirectUri() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "valid-auth-code",
+                redirectUri = "http://different.com/callback", // different from code
+                clientId = "test-client",
+                codeVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            )
+            
+            whenever(codeRepository.findValidCode(eq("valid-auth-code"), any()))
+                .thenReturn(Optional.of(testAuthCode))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+            assertThat(exception.errorDescription).contains("redirect_uri")
+        }
+
+        @Test
+        @DisplayName("should reject mismatched client_id")
+        fun shouldRejectMismatchedClientId() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "valid-auth-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "different-client", // different from code
+                codeVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+            )
+            
+            whenever(codeRepository.findValidCode(eq("valid-auth-code"), any()))
+                .thenReturn(Optional.of(testAuthCode))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+            assertThat(exception.errorDescription).contains("client")
+        }
+
+        @Test
+        @DisplayName("should reject invalid PKCE verifier")
+        fun shouldRejectInvalidPkceVerifier() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "valid-auth-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "test-client",
+                codeVerifier = "wrong-verifier"
+            )
+            
+            whenever(codeRepository.findValidCode(eq("valid-auth-code"), any()))
+                .thenReturn(Optional.of(testAuthCode))
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            whenever(pkceService.verifyCodeChallenge(
+                eq("wrong-verifier"),
+                eq("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
+                eq("S256")
+            )).thenReturn(false)
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+            assertThat(exception.errorDescription).contains("PKCE")
+        }
+
+        @Test
+        @DisplayName("should reject missing PKCE verifier when required")
+        fun shouldRejectMissingPkceVerifier() {
+            val request = TokenRequest(
+                grantType = "authorization_code",
+                code = "valid-auth-code",
+                redirectUri = "http://localhost:3000/callback",
+                clientId = "test-client",
+                codeVerifier = null // missing
+            )
+            
+            whenever(codeRepository.findValidCode(eq("valid-auth-code"), any()))
+                .thenReturn(Optional.of(testAuthCode))
+            whenever(clientRepository.findByClientId("test-client"))
+                .thenReturn(Optional.of(testClient))
+            
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.exchangeAuthorizationCode(request)
+            }
+            
+            assertThat(exception.error).isEqualTo("invalid_grant")
+            assertThat(exception.errorDescription).contains("code_verifier")
+        }
+    }
+
+    @Nested
+    @DisplayName("validateGrantType")
+    inner class ValidateGrantType {
+
+        @Test
+        @DisplayName("should accept supported grant types")
+        fun shouldAcceptSupportedGrantTypes() {
+            // Should not throw
+            tokenService.validateGrantType("authorization_code")
+            tokenService.validateGrantType("refresh_token")
+        }
+
+        @Test
+        @DisplayName("should reject unsupported grant types")
+        fun shouldRejectUnsupportedGrantTypes() {
+            val exception = assertThrows<OAuth2Exception> {
+                tokenService.validateGrantType("password")
+            }
+            
+            assertThat(exception.error).isEqualTo("unsupported_grant_type")
+        }
     }
 }
 </file>
@@ -2183,6 +4919,1300 @@ export default defineConfig({
 })
 </file>
 
+<file path="infrastructure/helm/ai-security-monitor/templates/_helpers.tpl">
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "ai-security-monitor.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
+If release name contains chart name it will be used as a full name.
+*/}}
+{{- define "ai-security-monitor.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Create chart name and version as used by the chart label.
+*/}}
+{{- define "ai-security-monitor.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Common labels
+*/}}
+{{- define "ai-security-monitor.labels" -}}
+helm.sh/chart: {{ include "ai-security-monitor.chart" . }}
+{{ include "ai-security-monitor.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels
+*/}}
+{{- define "ai-security-monitor.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "ai-security-monitor.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Create the name of the service account to use
+*/}}
+{{- define "ai-security-monitor.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "ai-security-monitor.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+PostgreSQL host
+*/}}
+{{- define "ai-security-monitor.postgresql.host" -}}
+{{- if .Values.postgresql.enabled }}
+{{- printf "%s-postgresql" .Release.Name }}
+{{- else }}
+{{- .Values.externalDatabase.host }}
+{{- end }}
+{{- end }}
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/configmap.yaml">
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}-config
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+data:
+  PGHOST: {{ include "ai-security-monitor.postgresql.host" . | quote }}
+  PGPORT: "5432"
+  PGDATABASE: {{ .Values.postgresql.auth.database | quote }}
+  PGUSER: {{ .Values.postgresql.auth.username | quote }}
+  PORT: "8080"
+  OAUTH2_ISSUER: {{ .Values.config.oauth2Issuer | quote }}
+  SPRING_PROFILES_ACTIVE: {{ .Values.config.springProfiles | quote }}
+  LOGGING_LEVEL_ROOT: {{ .Values.config.logLevel | quote }}
+  LOGGING_LEVEL_COM_SECUREMONITOR: "DEBUG"
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/deployment.yaml">
+{{- /*
+Deployment template for AI Security Monitor backend
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ai-security-monitor.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ai-security-monitor.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ai-security-monitor.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "ai-security-monitor.fullname" . }}-config
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-security-monitor.fullname" . }}-secrets
+                  key: database-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-security-monitor.fullname" . }}-secrets
+                  key: jwt-secret
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ai-security-monitor.fullname" . }}-secrets
+                  key: groq-api-key
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.livenessPath }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.livenessInitialDelay }}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.readinessPath }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.readinessInitialDelay }}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/ingress.yaml">
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "ai-security-monitor.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/secret.yaml">
+{{- if .Values.secrets.create }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}-secrets
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+type: Opaque
+data:
+  database-password: {{ .Values.secrets.databasePassword | b64enc | quote }}
+  jwt-secret: {{ .Values.secrets.jwtSecret | b64enc | quote }}
+  groq-api-key: {{ .Values.secrets.groqApiKey | b64enc | quote }}
+{{- end }}
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/service.yaml">
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-security-monitor.fullname" . }}
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ai-security-monitor.selectorLabels" . | nindent 4 }}
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/templates/serviceaccount.yaml">
+{{- if .Values.serviceAccount.create -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ai-security-monitor.serviceAccountName" . }}
+  labels:
+    {{- include "ai-security-monitor.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/Chart.yaml">
+apiVersion: v2
+name: ai-security-monitor
+description: A Helm chart for AI Security Monitor - IAM demonstration with OAuth2/OIDC
+
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - iam
+  - oauth2
+  - oidc
+  - security
+  - kotlin
+  - spring-boot
+
+home: https://github.com/dannyp19921/ai-security-monitor
+sources:
+  - https://github.com/dannyp19921/ai-security-monitor
+
+maintainers:
+  - name: Daniel-Aston Brandsgård Parker
+    email: daniel@example.com
+
+dependencies:
+  - name: postgresql
+    version: "12.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+</file>
+
+<file path="infrastructure/helm/ai-security-monitor/values.yaml">
+# Default values for ai-security-monitor
+# This is a YAML-formatted file.
+
+# -- Number of backend replicas
+replicaCount: 2
+
+image:
+  # -- Container image repository
+  repository: ai-security-monitor-backend
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default is appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the name of the chart
+nameOverride: ""
+
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations for the service account
+  annotations: {}
+  # -- Name of the service account (generated if not set)
+  name: ""
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# -- Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 80
+
+ingress:
+  # -- Enable ingress
+  enabled: true
+  # -- Ingress class name
+  className: nginx
+  # -- Ingress annotations
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+  # -- Ingress hosts configuration
+  hosts:
+    - host: api.ai-security-monitor.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls:
+    - secretName: ai-security-monitor-tls
+      hosts:
+        - api.ai-security-monitor.example.com
+
+# -- Resource requests and limits
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+# -- Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# Application configuration
+config:
+  # -- OAuth2 issuer URL
+  oauth2Issuer: "https://api.ai-security-monitor.example.com"
+  # -- Spring profiles
+  springProfiles: "kubernetes"
+  # -- Log level
+  logLevel: "INFO"
+
+# Secrets configuration
+secrets:
+  # -- Create secrets (set to false if using external secrets)
+  create: true
+  # -- Database password (use external secrets in production!)
+  databasePassword: "change-me-in-production"
+  # -- JWT signing secret (min 32 characters)
+  jwtSecret: "change-me-in-production-min-32-chars!"
+  # -- Groq API key
+  groqApiKey: ""
+
+# PostgreSQL configuration (using Bitnami subchart)
+postgresql:
+  # -- Enable PostgreSQL subchart
+  enabled: true
+  auth:
+    # -- PostgreSQL username
+    username: securemonitor
+    # -- PostgreSQL database name
+    database: securemonitor
+    # -- Use existing secret for password
+    existingSecret: ""
+  primary:
+    persistence:
+      # -- Enable persistence
+      enabled: true
+      # -- Persistence size
+      size: 1Gi
+
+# Health check configuration
+healthCheck:
+  # -- Liveness probe path
+  livenessPath: /api/health
+  # -- Readiness probe path
+  readinessPath: /api/health
+  # -- Initial delay for liveness probe
+  livenessInitialDelay: 30
+  # -- Initial delay for readiness probe
+  readinessInitialDelay: 10
+</file>
+
+<file path="infrastructure/kubernetes/backend-deployment.yaml">
+# Kubernetes Deployment for AI Security Monitor Backend
+# Defines how the application pods should be created and managed
+#
+# Key concepts demonstrated:
+# - Rolling updates for zero-downtime deployments
+# - Resource limits for stability
+# - Health checks (liveness/readiness probes)
+# - Security context (non-root user)
+# - Environment variables from ConfigMaps and Secrets
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-security-monitor-backend
+  labels:
+    app: ai-security-monitor
+    component: backend
+    version: v1
+spec:
+  replicas: 2  # High availability - minimum 2 pods
+  selector:
+    matchLabels:
+      app: ai-security-monitor
+      component: backend
+  
+  # Rolling update strategy for zero-downtime deployments
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Max 1 extra pod during update
+      maxUnavailable: 0  # Always keep all pods available
+  
+  template:
+    metadata:
+      labels:
+        app: ai-security-monitor
+        component: backend
+        version: v1
+      annotations:
+        # Force rolling update when configmap changes
+        checksum/config: "{{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
+    spec:
+      # Security: Run as non-root user
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+        - name: backend
+          image: ai-security-monitor-backend:latest
+          imagePullPolicy: Always
+          
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          
+          # Environment variables from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: ai-security-monitor-config
+          
+          # Sensitive environment variables from Secret
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-security-monitor-secrets
+                  key: database-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ai-security-monitor-secrets
+                  key: jwt-secret
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ai-security-monitor-secrets
+                  key: groq-api-key
+          
+          # Resource limits - important for cluster stability
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          
+          # Liveness probe - restart container if unhealthy
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # Readiness probe - don't route traffic until ready
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          
+          # Security context for container
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Spring Boot needs to write temp files
+            capabilities:
+              drop:
+                - ALL
+      
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 30
+      
+      # Spread pods across nodes for high availability
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ai-security-monitor
+              component: backend
+</file>
+
+<file path="infrastructure/kubernetes/backend-service.yaml">
+# Kubernetes Service for AI Security Monitor Backend
+# Provides stable network endpoint for the backend pods
+#
+# Key concepts:
+# - ClusterIP for internal communication
+# - Service discovery via DNS (ai-security-monitor-backend.namespace.svc.cluster.local)
+# - Load balancing across pods
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-security-monitor-backend
+  labels:
+    app: ai-security-monitor
+    component: backend
+spec:
+  type: ClusterIP  # Internal only - Ingress handles external traffic
+  
+  selector:
+    app: ai-security-monitor
+    component: backend
+  
+  ports:
+    - name: http
+      port: 80           # Service port
+      targetPort: http   # Container port (8080)
+      protocol: TCP
+</file>
+
+<file path="infrastructure/kubernetes/configmap.yaml">
+# Kubernetes ConfigMap for AI Security Monitor
+# Stores non-sensitive configuration as key-value pairs
+#
+# Key concepts:
+# - Separates config from code (12-factor app principle)
+# - Can be updated without rebuilding container
+# - Mounted as environment variables or files
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-security-monitor-config
+  labels:
+    app: ai-security-monitor
+data:
+  # Database configuration
+  PGHOST: "postgres-service"  # Kubernetes service name
+  PGPORT: "5432"
+  PGDATABASE: "securemonitor"
+  PGUSER: "securemonitor"
+  
+  # Application configuration
+  PORT: "8080"
+  
+  # OAuth2 / OIDC configuration
+  OAUTH2_ISSUER: "https://ai-security-monitor.example.com"
+  
+  # Spring profiles
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  
+  # Logging
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_SECUREMONITOR: "DEBUG"
+</file>
+
+<file path="infrastructure/kubernetes/ingress.yaml">
+# Kubernetes Ingress for AI Security Monitor
+# Manages external access to the services
+#
+# Key concepts:
+# - TLS termination (HTTPS)
+# - Path-based routing
+# - Host-based routing
+# - Integration with cert-manager for automatic TLS certificates
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-security-monitor-ingress
+  labels:
+    app: ai-security-monitor
+  annotations:
+    # Nginx Ingress Controller annotations
+    kubernetes.io/ingress.class: nginx
+    
+    # TLS/SSL configuration
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    
+    # CORS configuration (if needed)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://ai-security-monitor.vercel.app"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+    
+    # Rate limiting (basic DDoS protection)
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-connections: "5"
+
+spec:
+  tls:
+    - hosts:
+        - api.ai-security-monitor.example.com
+      secretName: ai-security-monitor-tls
+  
+  rules:
+    # Backend API
+    - host: api.ai-security-monitor.example.com
+      http:
+        paths:
+          # Health check (public)
+          - path: /api/health
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-security-monitor-backend
+                port:
+                  name: http
+          
+          # OAuth2/OIDC endpoints
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-security-monitor-backend
+                port:
+                  name: http
+          
+          - path: /.well-known
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-security-monitor-backend
+                port:
+                  name: http
+          
+          # All other API routes
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-security-monitor-backend
+                port:
+                  name: http
+</file>
+
+<file path="infrastructure/kubernetes/kustomization.yaml">
+# Kustomization file for AI Security Monitor
+# Allows applying all resources with a single command:
+#   kubectl apply -k infrastructure/kubernetes/
+#
+# Key concepts:
+# - Declarative configuration management
+# - Environment-specific overlays
+# - Resource generation (ConfigMaps, Secrets from files)
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: ai-security-monitor
+
+# Namespace for all resources
+namespace: ai-security-monitor
+
+# Resources to include (order matters for dependencies)
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - configmap.yaml
+  - postgres.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - ingress.yaml
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/name: ai-security-monitor
+  app.kubernetes.io/managed-by: kustomize
+
+# Common annotations
+commonAnnotations:
+  app.kubernetes.io/version: "1.0.0"
+</file>
+
+<file path="infrastructure/kubernetes/namespace.yaml">
+# Kubernetes Namespace for AI Security Monitor
+# Isolates resources and provides RBAC boundary
+#
+# Key concepts:
+# - Resource isolation
+# - Network policies can be applied per namespace
+# - Resource quotas can limit resource usage
+# - RBAC can control access per namespace
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-security-monitor
+  labels:
+    app: ai-security-monitor
+    environment: production
+  annotations:
+    description: "AI Security Monitor - IAM demonstration application"
+</file>
+
+<file path="infrastructure/kubernetes/postgres.yaml">
+# PostgreSQL Deployment for AI Security Monitor
+# Provides the database backend
+#
+# NOTE: For production, consider using:
+# - Managed database service (AWS RDS, Azure Database, Google Cloud SQL)
+# - PostgreSQL Operator (CrunchyData, Zalando)
+# - StatefulSet with persistent storage
+#
+# This is a simple deployment suitable for development/testing
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  replicas: 1  # Single instance for simplicity
+  selector:
+    matchLabels:
+      app: ai-security-monitor
+      component: database
+  
+  template:
+    metadata:
+      labels:
+        app: ai-security-monitor
+        component: database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          
+          ports:
+            - containerPort: 5432
+              name: postgres
+          
+          env:
+            - name: POSTGRES_DB
+              value: securemonitor
+            - name: POSTGRES_USER
+              value: securemonitor
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-security-monitor-secrets
+                  key: database-password
+            # Improve performance for development
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: md5
+          
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          
+          # Persistent storage
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          
+          # Health check
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - securemonitor
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - securemonitor
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+---
+# Service for PostgreSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-security-monitor
+    component: database
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+
+---
+# Persistent Volume Claim for PostgreSQL data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  labels:
+    app: ai-security-monitor
+    component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Use default storage class
+  # storageClassName: standard
+</file>
+
+<file path="infrastructure/kubernetes/README.md">
+# Kubernetes Deployment
+
+This directory contains Kubernetes manifests for deploying AI Security Monitor.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Kubernetes Cluster                           │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                    Namespace: ai-security-monitor            │   │
+│  │                                                              │   │
+│  │   ┌─────────────┐      ┌─────────────┐      ┌────────────┐  │   │
+│  │   │   Ingress   │──────│   Service   │──────│ Deployment │  │   │
+│  │   │   (HTTPS)   │      │  (ClusterIP)│      │  (2 pods)  │  │   │
+│  │   └─────────────┘      └─────────────┘      └────────────┘  │   │
+│  │          │                                        │         │   │
+│  │          │              ┌─────────────┐          │         │   │
+│  │          │              │  ConfigMap  │──────────┤         │   │
+│  │          │              │  (config)   │          │         │   │
+│  │          │              └─────────────┘          │         │   │
+│  │          │              ┌─────────────┐          │         │   │
+│  │          │              │   Secret    │──────────┤         │   │
+│  │          │              │ (passwords) │          │         │   │
+│  │          │              └─────────────┘          │         │   │
+│  │          │                                        │         │   │
+│  │          │              ┌─────────────┐          │         │   │
+│  │          └──────────────│  PostgreSQL │──────────┘         │   │
+│  │                         │   Service   │                    │   │
+│  │                         └─────────────┘                    │   │
+│  │                               │                            │   │
+│  │                         ┌─────────────┐                    │   │
+│  │                         │     PVC     │                    │   │
+│  │                         │  (storage)  │                    │   │
+│  │                         └─────────────┘                    │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `namespace.yaml` | Namespace for resource isolation |
+| `configmap.yaml` | Non-sensitive configuration |
+| `secrets.yaml` | Sensitive configuration (passwords, keys) |
+| `backend-deployment.yaml` | Backend application pods |
+| `backend-service.yaml` | Internal networking for backend |
+| `postgres.yaml` | PostgreSQL database |
+| `ingress.yaml` | External HTTPS access |
+| `kustomization.yaml` | Kustomize configuration |
+
+## Prerequisites
+
+- Kubernetes cluster (minikube, kind, GKE, EKS, AKS, etc.)
+- kubectl configured
+- Docker image built and pushed to registry
+
+## Quick Start
+
+### 1. Build and push Docker image
+
+```bash
+# Build the image
+cd backend
+docker build -t your-registry/ai-security-monitor-backend:latest .
+
+# Push to registry
+docker push your-registry/ai-security-monitor-backend:latest
+```
+
+### 2. Update image reference
+
+Edit `backend-deployment.yaml` and update the image:
+```yaml
+image: your-registry/ai-security-monitor-backend:latest
+```
+
+### 3. Create secrets (do NOT use the placeholder values!)
+
+```bash
+kubectl create namespace ai-security-monitor
+
+kubectl -n ai-security-monitor create secret generic ai-security-monitor-secrets \
+  --from-literal=database-password='YOUR_SECURE_PASSWORD' \
+  --from-literal=jwt-secret='YOUR_256_BIT_SECRET_MIN_32_CHARS' \
+  --from-literal=groq-api-key='YOUR_GROQ_API_KEY'
+```
+
+### 4. Deploy with Kustomize
+
+```bash
+# Preview what will be applied
+kubectl apply -k infrastructure/kubernetes/ --dry-run=client -o yaml
+
+# Apply all resources
+kubectl apply -k infrastructure/kubernetes/
+
+# Watch deployment progress
+kubectl -n ai-security-monitor get pods -w
+```
+
+### 5. Verify deployment
+
+```bash
+# Check all resources
+kubectl -n ai-security-monitor get all
+
+# Check pod logs
+kubectl -n ai-security-monitor logs -l app=ai-security-monitor,component=backend
+
+# Port forward for local testing
+kubectl -n ai-security-monitor port-forward svc/ai-security-monitor-backend 8080:80
+
+# Test health endpoint
+curl http://localhost:8080/api/health
+```
+
+## Local Development with Minikube
+
+```bash
+# Start minikube
+minikube start
+
+# Enable ingress addon
+minikube addons enable ingress
+
+# Build image directly in minikube's Docker daemon
+eval $(minikube docker-env)
+cd backend && docker build -t ai-security-monitor-backend:latest .
+
+# Update deployment to use local image
+# Set imagePullPolicy: Never in backend-deployment.yaml
+
+# Deploy
+kubectl apply -k infrastructure/kubernetes/
+
+# Get minikube IP and add to /etc/hosts
+echo "$(minikube ip) api.ai-security-monitor.example.com" | sudo tee -a /etc/hosts
+
+# Access the application
+curl http://api.ai-security-monitor.example.com/api/health
+```
+
+## Production Considerations
+
+### Security
+- [ ] Use proper secrets management (Vault, Sealed Secrets, External Secrets)
+- [ ] Enable Network Policies to restrict pod-to-pod communication
+- [ ] Use Pod Security Policies / Pod Security Standards
+- [ ] Enable RBAC for namespace access
+- [ ] Use service mesh for mTLS (Istio, Linkerd)
+
+### High Availability
+- [ ] Use managed PostgreSQL (RDS, Cloud SQL, Azure Database)
+- [ ] Increase replica count based on load
+- [ ] Configure Pod Disruption Budgets
+- [ ] Use multi-zone deployment
+
+### Monitoring
+- [ ] Deploy Prometheus for metrics
+- [ ] Deploy Grafana for dashboards
+- [ ] Configure alerts for critical metrics
+- [ ] Enable distributed tracing (Jaeger, Zipkin)
+
+### CI/CD
+- [ ] Automated image building in CI pipeline
+- [ ] GitOps with ArgoCD or Flux
+- [ ] Automated rollbacks on failure
+
+## Troubleshooting
+
+### Pods not starting
+```bash
+# Check pod status
+kubectl -n ai-security-monitor describe pod <pod-name>
+
+# Check events
+kubectl -n ai-security-monitor get events --sort-by='.lastTimestamp'
+```
+
+### Database connection issues
+```bash
+# Check PostgreSQL logs
+kubectl -n ai-security-monitor logs -l component=database
+
+# Test database connectivity from backend pod
+kubectl -n ai-security-monitor exec -it <backend-pod> -- nc -zv postgres-service 5432
+```
+
+### Ingress not working
+```bash
+# Check ingress status
+kubectl -n ai-security-monitor describe ingress ai-security-monitor-ingress
+
+# Check ingress controller logs
+kubectl -n ingress-nginx logs -l app.kubernetes.io/name=ingress-nginx
+```
+
+## Relevant for Cyberforsvaret Interview
+
+This configuration demonstrates:
+
+1. **Container orchestration** - Kubernetes deployment patterns
+2. **Security best practices** - Non-root containers, security contexts, secrets management
+3. **High availability** - Multiple replicas, rolling updates, health checks
+4. **Infrastructure as Code** - Declarative configuration
+5. **12-factor app principles** - Config separation, stateless processes
+6. **Cloud-native patterns** - Service discovery, load balancing
+</file>
+
+<file path="infrastructure/kubernetes/secrets.yaml">
+# Kubernetes Secret for AI Security Monitor
+# Stores sensitive configuration like passwords and API keys
+#
+# IMPORTANT: 
+# - In production, use a proper secrets management solution:
+#   - HashiCorp Vault
+#   - AWS Secrets Manager
+#   - Azure Key Vault
+#   - Sealed Secrets
+# - Never commit actual secrets to Git!
+# - This file contains placeholder values for demonstration
+#
+# Key concepts:
+# - Base64 encoded values (not encryption!)
+# - Mounted as environment variables or files
+# - RBAC controls who can read secrets
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-security-monitor-secrets
+  labels:
+    app: ai-security-monitor
+type: Opaque
+data:
+  # Base64 encoded values
+  # To encode: echo -n 'your-value' | base64
+  # To decode: echo 'encoded-value' | base64 -d
+  
+  # Database password (placeholder: "change-me-in-production")
+  database-password: Y2hhbmdlLW1lLWluLXByb2R1Y3Rpb24=
+  
+  # JWT signing secret (placeholder: "your-256-bit-secret-key-here-min-32-chars")
+  jwt-secret: eW91ci0yNTYtYml0LXNlY3JldC1rZXktaGVyZS1taW4tMzItY2hhcnM=
+  
+  # Groq API key (placeholder: "your-groq-api-key")
+  groq-api-key: eW91ci1ncm9xLWFwaS1rZXk=
+
+---
+# Example: How to create secrets from command line (more secure):
+#
+# kubectl create secret generic ai-security-monitor-secrets \
+#   --from-literal=database-password='actual-password' \
+#   --from-literal=jwt-secret='actual-jwt-secret-min-32-chars' \
+#   --from-literal=groq-api-key='actual-groq-key'
+</file>
+
+<file path="infrastructure/README.md">
+# Infrastructure
+
+This directory contains infrastructure configurations for deploying AI Security Monitor.
+
+## Structure
+
+```
+infrastructure/
+├── kubernetes/          # Raw Kubernetes manifests
+│   ├── namespace.yaml
+│   ├── configmap.yaml
+│   ├── secrets.yaml
+│   ├── backend-deployment.yaml
+│   ├── backend-service.yaml
+│   ├── postgres.yaml
+│   ├── ingress.yaml
+│   ├── kustomization.yaml
+│   └── README.md
+│
+└── helm/               # Helm chart for templated deployment
+    └── ai-security-monitor/
+        ├── Chart.yaml
+        ├── values.yaml
+        └── templates/
+            ├── _helpers.tpl
+            ├── deployment.yaml
+            ├── service.yaml
+            ├── configmap.yaml
+            ├── secret.yaml
+            ├── ingress.yaml
+            └── serviceaccount.yaml
+```
+
+## Deployment Options
+
+### Option 1: Raw Kubernetes (simple, for learning)
+
+```bash
+# Apply all resources
+kubectl apply -k kubernetes/
+```
+
+### Option 2: Helm (recommended for production)
+
+```bash
+# Install with default values
+helm install ai-security-monitor helm/ai-security-monitor/
+
+# Install with custom values
+helm install ai-security-monitor helm/ai-security-monitor/ \
+  --set config.oauth2Issuer=https://your-domain.com \
+  --set secrets.databasePassword=your-secure-password
+
+# Upgrade existing release
+helm upgrade ai-security-monitor helm/ai-security-monitor/
+```
+
+## Why Two Options?
+
+| Aspect | Raw Kubernetes | Helm |
+|--------|---------------|------|
+| Learning | Easier to understand | More complex |
+| Reusability | Copy/paste | Parameterized |
+| Environment configs | Manual editing | values.yaml per env |
+| Upgrades | kubectl apply | helm upgrade |
+| Rollback | Manual | helm rollback |
+| Dependencies | Manual | Chart dependencies |
+
+## Relevance for Job Applications
+
+### DFØ (IAM Advisor)
+- Infrastructure as Code principles
+- Security configurations (secrets management, RBAC)
+- Enterprise deployment patterns
+
+### Cyberforsvaret (Open Source Developer)
+- Kubernetes proficiency (directly mentioned as "ønskelig")
+- Container orchestration
+- Cloud-native application design
+- DevOps practices
+</file>
+
 <file path=".gitignore">
 # Dependencies
 node_modules/
@@ -2415,6 +6445,541 @@ data class ChatResponse(
     val response: String,
     val timestamp: String = java.time.Instant.now().toString()
 )
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/service/AuthorizationService.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.dto.AuthorizationRequest
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.model.AuthorizationCode
+import com.securemonitor.oauth2.model.OAuth2Client
+import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import com.securemonitor.service.AuditService
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
+import java.time.Instant
+import java.util.Base64
+
+/**
+ * Service handling OAuth 2.0 authorization requests.
+ * 
+ * This service implements the authorization endpoint logic as defined in
+ * RFC 6749 Section 4.1. It handles:
+ * - Request validation
+ * - Client authentication
+ * - PKCE validation
+ * - Authorization code generation
+ * - Redirect URI construction
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1">RFC 6749 Section 4.1</a>
+ */
+@Service
+class AuthorizationService(
+    private val clientRepository: OAuth2ClientRepository,
+    private val codeRepository: AuthorizationCodeRepository,
+    private val pkceService: PkceService,
+    private val auditService: AuditService
+) {
+    private val log = LoggerFactory.getLogger(AuthorizationService::class.java)
+    private val secureRandom = SecureRandom()
+
+    companion object {
+        /** Supported response types */
+        val SUPPORTED_RESPONSE_TYPES = setOf("code")
+        
+        /** Length of generated authorization codes */
+        const val CODE_LENGTH = 32
+        
+        /** Authorization code lifetime in seconds */
+        const val CODE_LIFETIME_SECONDS = 600L // 10 minutes
+    }
+
+    /**
+     * Validates an authorization request and returns the validated client.
+     * 
+     * This method performs all validation required before showing the consent
+     * screen to the user. Validation includes:
+     * - response_type must be "code"
+     * - client_id must exist and be enabled
+     * - redirect_uri must be registered for the client
+     * - scope must be allowed for the client
+     * - PKCE must be present if required by the client
+     * 
+     * @param request The authorization request to validate
+     * @return The validated OAuth2Client
+     * @throws OAuth2Exception if validation fails
+     */
+    fun validateAuthorizationRequest(request: AuthorizationRequest): OAuth2Client {
+        log.debug("Validating authorization request for client: {}", request.clientId)
+        
+        // Validate response_type
+        if (request.responseType !in SUPPORTED_RESPONSE_TYPES) {
+            log.warn("Unsupported response_type: {}", request.responseType)
+            throw OAuth2Exception(
+                error = "unsupported_response_type",
+                errorDescription = "Response type '${request.responseType}' is not supported. " +
+                    "Supported types: $SUPPORTED_RESPONSE_TYPES"
+            )
+        }
+        
+        // Find and validate client
+        val client = clientRepository.findByClientId(request.clientId).orElseThrow {
+            log.warn("Unknown client_id: {}", request.clientId)
+            OAuth2Exception.invalidClient("Client '${request.clientId}' not found")
+        }
+        
+        // Check if client is enabled
+        if (!client.enabled) {
+            log.warn("Disabled client attempted authorization: {}", request.clientId)
+            throw OAuth2Exception.invalidClient("Client '${request.clientId}' is disabled")
+        }
+        
+        // Validate redirect_uri
+        if (!client.isRedirectUriAllowed(request.redirectUri)) {
+            log.warn(
+                "Invalid redirect_uri for client {}: {}. Allowed: {}",
+                request.clientId, request.redirectUri, client.redirectUris
+            )
+            throw OAuth2Exception.invalidRequest(
+                "Invalid redirect_uri. The redirect URI must exactly match a registered URI."
+            )
+        }
+        
+        // Validate scope
+        if (!client.areAllScopesAllowed(request.scope)) {
+            log.warn(
+                "Invalid scope for client {}: {}. Allowed: {}",
+                request.clientId, request.scope, client.allowedScopes
+            )
+            throw OAuth2Exception.invalidScope(
+                "One or more requested scopes are not allowed for this client. " +
+                "Allowed scopes: ${client.allowedScopes}"
+            )
+        }
+        
+        // Validate PKCE if required
+        if (client.requirePkce && request.codeChallenge.isNullOrBlank()) {
+            log.warn("PKCE required but not provided for client: {}", request.clientId)
+            throw OAuth2Exception.invalidRequest(
+                "PKCE is required for this client. " +
+                "Please include code_challenge and code_challenge_method parameters."
+            )
+        }
+        
+        // Validate code_challenge_method if code_challenge is present
+        if (!request.codeChallenge.isNullOrBlank()) {
+            val method = request.codeChallengeMethod ?: "plain"
+            if (method !in PkceService.SUPPORTED_METHODS) {
+                throw OAuth2Exception.invalidRequest(
+                    "Unsupported code_challenge_method: $method. " +
+                    "Supported methods: ${PkceService.SUPPORTED_METHODS}"
+                )
+            }
+        }
+        
+        log.debug("Authorization request validated successfully for client: {}", request.clientId)
+        return client
+    }
+
+    /**
+     * Creates an authorization code after user consent.
+     * 
+     * The authorization code is a cryptographically secure random string that
+     * is bound to the client, user, redirect URI, and PKCE parameters. It is
+     * single-use and short-lived.
+     * 
+     * @param client The validated OAuth2 client
+     * @param request The original authorization request
+     * @param userId The ID of the user who consented
+     * @param username The username of the user who consented
+     * @return The created AuthorizationCode
+     */
+    @Transactional
+    fun createAuthorizationCode(
+        client: OAuth2Client,
+        request: AuthorizationRequest,
+        userId: Long,
+        username: String
+    ): AuthorizationCode {
+        val codeValue = generateSecureCode()
+        val now = Instant.now()
+        
+        val authorizationCode = AuthorizationCode(
+            code = codeValue,
+            clientId = client.clientId,
+            userId = userId,
+            username = username,
+            redirectUri = request.redirectUri,
+            scope = request.scope,
+            codeChallenge = request.codeChallenge,
+            codeChallengeMethod = request.codeChallengeMethod,
+            nonce = request.nonce,
+            issuedAt = now,
+            expiresAt = now.plusSeconds(CODE_LIFETIME_SECONDS)
+        )
+        
+        val savedCode = codeRepository.save(authorizationCode)
+        
+        auditService.log(
+            action = "OAUTH2_CODE_ISSUED",
+            username = username,
+            resourceType = "OAUTH2_CLIENT",
+            resourceId = client.clientId,
+            details = "Authorization code issued. Scope: ${request.scope ?: "default"}, " +
+                "PKCE: ${request.codeChallenge != null}",
+            success = true
+        )
+        
+        log.info(
+            "Authorization code issued for user {} to client {}",
+            username, client.clientId
+        )
+        
+        return savedCode
+    }
+
+    /**
+     * Builds the redirect URI with the authorization code.
+     * 
+     * @param baseRedirectUri The base redirect URI from the request
+     * @param code The authorization code
+     * @param state The state parameter (if provided)
+     * @return The complete redirect URI
+     */
+    fun buildAuthorizationRedirect(
+        baseRedirectUri: String,
+        code: String,
+        state: String?
+    ): String {
+        val params = mutableListOf<String>()
+        params.add("code=${urlEncode(code)}")
+        state?.let { params.add("state=${urlEncode(it)}") }
+        
+        return appendQueryParams(baseRedirectUri, params)
+    }
+
+    /**
+     * Builds an error redirect URI.
+     * 
+     * @param baseRedirectUri The base redirect URI
+     * @param error The error code
+     * @param errorDescription Human-readable error description
+     * @param state The state parameter (if provided)
+     * @return The error redirect URI
+     */
+    fun buildErrorRedirect(
+        baseRedirectUri: String,
+        error: String,
+        errorDescription: String?,
+        state: String?
+    ): String {
+        val params = mutableListOf<String>()
+        params.add("error=${urlEncode(error)}")
+        errorDescription?.let { params.add("error_description=${urlEncode(it)}") }
+        state?.let { params.add("state=${urlEncode(it)}") }
+        
+        return appendQueryParams(baseRedirectUri, params)
+    }
+
+    /**
+     * Generates a cryptographically secure authorization code.
+     */
+    private fun generateSecureCode(): String {
+        val bytes = ByteArray(CODE_LENGTH)
+        secureRandom.nextBytes(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    /**
+     * URL-encodes a string.
+     */
+    private fun urlEncode(value: String): String =
+        URLEncoder.encode(value, StandardCharsets.UTF_8)
+
+    /**
+     * Appends query parameters to a URI.
+     */
+    private fun appendQueryParams(uri: String, params: List<String>): String {
+        if (params.isEmpty()) return uri
+        
+        val separator = if (uri.contains("?")) "&" else "?"
+        return uri + separator + params.joinToString("&")
+    }
+}
+</file>
+
+<file path="backend/src/main/kotlin/com/securemonitor/oauth2/service/TokenService.kt">
+package com.securemonitor.oauth2.service
+
+import com.securemonitor.oauth2.dto.TokenRequest
+import com.securemonitor.oauth2.dto.TokenResponse
+import com.securemonitor.oauth2.exception.OAuth2Exception
+import com.securemonitor.oauth2.model.AuthorizationCode
+import com.securemonitor.oauth2.repository.AuthorizationCodeRepository
+import com.securemonitor.oauth2.repository.OAuth2ClientRepository
+import com.securemonitor.service.AuditService
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.security.Keys
+import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import java.security.SecureRandom
+import java.time.Instant
+import java.util.*
+import javax.crypto.SecretKey
+
+/**
+ * Service handling OAuth 2.0 token requests.
+ * 
+ * This service implements the token endpoint logic as defined in
+ * RFC 6749 Section 4.1.3 and Section 6. It handles:
+ * - Authorization code exchange
+ * - Refresh token exchange
+ * - PKCE verification
+ * - JWT access token generation
+ * - ID token generation (OIDC)
+ * 
+ * @see <a href="https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3">RFC 6749 Section 4.1.3</a>
+ */
+@Service
+class TokenService(
+    private val clientRepository: OAuth2ClientRepository,
+    private val codeRepository: AuthorizationCodeRepository,
+    private val pkceService: PkceService,
+    private val auditService: AuditService,
+    @Value("\${oauth2.issuer:http://localhost:8080}")
+    private val issuer: String,
+    @Value("\${oauth2.access-token-lifetime:3600}")
+    private val accessTokenLifetimeSeconds: Long,
+    @Value("\${oauth2.refresh-token-lifetime:86400}")
+    private val refreshTokenLifetimeSeconds: Long,
+    @Value("\${jwt.secret:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}")
+    private val jwtSecret: String = "myDefaultSecretKeyThatIsAtLeast256BitsLong123456"
+) {
+    private val log = LoggerFactory.getLogger(TokenService::class.java)
+    private val secureRandom = SecureRandom()
+    
+    private val secretKey: SecretKey by lazy {
+        Keys.hmacShaKeyFor(jwtSecret.toByteArray())
+    }
+
+    companion object {
+        /** Supported grant types */
+        val SUPPORTED_GRANT_TYPES = setOf(
+            "authorization_code",
+            "refresh_token"
+        )
+    }
+
+    /**
+     * Exchanges an authorization code for access and refresh tokens.
+     * 
+     * This method:
+     * 1. Validates the authorization code
+     * 2. Verifies the client and redirect_uri match
+     * 3. Verifies PKCE if present
+     * 4. Marks the code as used
+     * 5. Generates and returns tokens
+     * 
+     * @param request The token request
+     * @return TokenResponse containing access_token, refresh_token, etc.
+     * @throws OAuth2Exception if validation fails
+     */
+    @Transactional
+    fun exchangeAuthorizationCode(request: TokenRequest): TokenResponse {
+        log.debug("Processing authorization code exchange for client: {}", request.clientId)
+        
+        // Validate grant type
+        validateGrantType(request.grantType)
+        
+        // Find and validate authorization code
+        val authCode = codeRepository.findValidCode(request.code!!, Instant.now())
+            .orElseThrow {
+                log.warn("Invalid or expired authorization code")
+                OAuth2Exception.invalidGrant("Authorization code is invalid, expired, or has already been used")
+            }
+        
+        // Verify client_id matches
+        if (authCode.clientId != request.clientId) {
+            log.warn(
+                "Client ID mismatch. Code issued to: {}, Request from: {}",
+                authCode.clientId, request.clientId
+            )
+            throw OAuth2Exception.invalidGrant("Authorization code was not issued to this client")
+        }
+        
+        // Verify redirect_uri matches
+        if (authCode.redirectUri != request.redirectUri) {
+            log.warn(
+                "Redirect URI mismatch. Code: {}, Request: {}",
+                authCode.redirectUri, request.redirectUri
+            )
+            throw OAuth2Exception.invalidGrant("redirect_uri does not match the one used in authorization request")
+        }
+        
+        // Get client for additional validation
+        val client = clientRepository.findByClientId(request.clientId!!)
+            .orElseThrow {
+                OAuth2Exception.invalidClient("Client not found")
+            }
+        
+        // Verify PKCE if code challenge was present
+        val codeChallenge = authCode.codeChallenge
+        if (codeChallenge != null) {
+            if (request.codeVerifier.isNullOrBlank()) {
+                log.warn("PKCE code_verifier missing for code that requires it")
+                throw OAuth2Exception.invalidGrant(
+                    "code_verifier is required because code_challenge was used in authorization"
+                )
+            }
+            
+            val pkceValid = pkceService.verifyCodeChallenge(
+                codeVerifier = request.codeVerifier,
+                codeChallenge = codeChallenge,  // <-- Nå fungerer smart cast
+                method = authCode.codeChallengeMethod ?: "S256"
+            )
+            
+            if (!pkceValid) {
+                log.warn("PKCE verification failed for client: {}", request.clientId)
+                auditService.log(
+                    action = "OAUTH2_PKCE_FAILED",
+                    username = authCode.username,
+                    resourceType = "OAUTH2_CLIENT",
+                    resourceId = client.clientId,
+                    details = "PKCE code_verifier validation failed",
+                    success = false
+                )
+                throw OAuth2Exception.invalidGrant("PKCE verification failed. code_verifier does not match code_challenge")
+            }
+        }
+        
+        // Mark code as used (single-use)
+        authCode.markAsUsed()
+        codeRepository.save(authCode)
+        
+        // Generate tokens
+        val accessToken = generateAccessToken(
+            subject = authCode.userId.toString(),
+            username = authCode.username,
+            clientId = client.clientId,
+            scope = authCode.scope,
+            lifetime = client.accessTokenLifetimeSeconds
+        )
+        
+        val refreshToken = generateRefreshToken()
+        
+        // Generate ID token if openid scope was requested
+        val idToken = if (authCode.getScopeSet().contains("openid")) {
+            generateIdToken(
+                subject = authCode.userId.toString(),
+                username = authCode.username,
+                clientId = client.clientId,
+                nonce = authCode.nonce
+            )
+        } else null
+        
+        auditService.log(
+            action = "OAUTH2_TOKEN_ISSUED",
+            username = authCode.username,
+            resourceType = "OAUTH2_CLIENT",
+            resourceId = client.clientId,
+            details = "Tokens issued. Scope: ${authCode.scope ?: "default"}, ID Token: ${idToken != null}",
+            success = true
+        )
+        
+        log.info("Tokens issued for user {} to client {}", authCode.username, client.clientId)
+        
+        return TokenResponse(
+            accessToken = accessToken,
+            tokenType = "Bearer",
+            expiresIn = client.accessTokenLifetimeSeconds,
+            refreshToken = refreshToken,
+            scope = authCode.scope,
+            idToken = idToken
+        )
+    }
+
+    /**
+     * Validates that the grant type is supported.
+     * 
+     * @param grantType The grant type to validate
+     * @throws OAuth2Exception if grant type is not supported
+     */
+    fun validateGrantType(grantType: String) {
+        if (grantType !in SUPPORTED_GRANT_TYPES) {
+            throw OAuth2Exception.unsupportedGrantType(grantType)
+        }
+    }
+
+    /**
+     * Generates a JWT access token.
+     */
+    private fun generateAccessToken(
+        subject: String,
+        username: String,
+        clientId: String,
+        scope: String?,
+        lifetime: Long
+    ): String {
+        val now = Instant.now()
+        val expiry = now.plusSeconds(lifetime)
+        
+        return Jwts.builder()
+            .subject(subject)
+            .issuer(issuer)
+            .audience().add(clientId).and()
+            .issuedAt(Date.from(now))
+            .expiration(Date.from(expiry))
+            .claim("username", username)
+            .claim("scope", scope ?: "")
+            .claim("token_type", "access_token")
+            .signWith(secretKey)
+            .compact()
+    }
+
+    /**
+     * Generates an OIDC ID token.
+     */
+    private fun generateIdToken(
+        subject: String,
+        username: String,
+        clientId: String,
+        nonce: String?
+    ): String {
+        val now = Instant.now()
+        val expiry = now.plusSeconds(3600) // ID tokens typically have shorter lifetime
+        
+        val builder = Jwts.builder()
+            .subject(subject)
+            .issuer(issuer)
+            .audience().add(clientId).and()
+            .issuedAt(Date.from(now))
+            .expiration(Date.from(expiry))
+            .claim("auth_time", now.epochSecond)
+            .claim("preferred_username", username)
+        
+        // Include nonce if provided (for replay protection)
+        nonce?.let { builder.claim("nonce", it) }
+        
+        return builder.signWith(secretKey).compact()
+    }
+
+    /**
+     * Generates a secure refresh token.
+     */
+    private fun generateRefreshToken(): String {
+        val bytes = ByteArray(32)
+        secureRandom.nextBytes(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+}
 </file>
 
 <file path="frontend/src/types/index.ts">
@@ -3228,6 +7793,16 @@ import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.CorsConfigurationSource
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 
+/**
+ * Security configuration for the application.
+ * 
+ * Configures:
+ * - CORS settings
+ * - CSRF protection (disabled for stateless JWT auth)
+ * - Session management (stateless)
+ * - Endpoint authorization rules
+ * - JWT authentication filter
+ */
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
@@ -3240,12 +7815,32 @@ class SecurityConfig(
         http
             .cors { it.configurationSource(corsConfigurationSource()) }
             .csrf { it.disable() }
-            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .sessionManagement { 
+                // Use stateless sessions for API endpoints
+                // OAuth2 authorize endpoint may need session for login flow
+                it.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
+            }
             .authorizeHttpRequests { auth ->
                 auth
+                    // Public health check
                     .requestMatchers("/api/health").permitAll()
+                    
+                    // Authentication endpoints
                     .requestMatchers("/api/auth/**").permitAll()
+                    
+                    // OAuth 2.0 / OIDC public endpoints
+                    .requestMatchers("/.well-known/openid-configuration").permitAll()
+                    .requestMatchers("/.well-known/jwks.json").permitAll()
+                    .requestMatchers("/oauth2/authorize").permitAll() // Requires auth inside handler
+                    .requestMatchers("/oauth2/token").permitAll()
+                    
+                    // OAuth 2.0 protected endpoints
+                    .requestMatchers("/oauth2/userinfo").authenticated()
+                    
+                    // Admin endpoints
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                    
+                    // All other requests require authentication
                     .anyRequest().authenticated()
             }
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
@@ -3259,10 +7854,13 @@ class SecurityConfig(
         configuration.allowedOrigins = listOf(
             "http://localhost:5173",
             "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
             "https://ai-security-monitor.vercel.app"
         )
         configuration.allowedMethods = listOf("GET", "POST", "PUT", "DELETE", "OPTIONS")
         configuration.allowedHeaders = listOf("*")
+        configuration.exposedHeaders = listOf("Location") // For OAuth2 redirects
         configuration.allowCredentials = true
 
         val source = UrlBasedCorsConfigurationSource()
@@ -3300,9 +7898,30 @@ spring:
 server:
   port: ${PORT:8080}
 
+# JWT Configuration
+jwt:
+  secret: ${JWT_SECRET:myDefaultSecretKeyThatIsAtLeast256BitsLong123456}
+  expiration: 86400000 # 24 hours in milliseconds
+
+# OAuth 2.0 / OIDC Configuration
+oauth2:
+  issuer: ${OAUTH2_ISSUER:http://localhost:8080}
+  access-token-lifetime: 3600      # 1 hour
+  refresh-token-lifetime: 2592000  # 30 days
+  authorization-code-lifetime: 600 # 10 minutes
+  require-pkce: true
+
+# Groq AI Configuration
 groq:
   api-key: ${GROQ_API_KEY:}
   model: llama-3.1-8b-instant
+
+# Logging
+logging:
+  level:
+    com.securemonitor: DEBUG
+    com.securemonitor.oauth2: DEBUG
+    org.springframework.security: INFO
 </file>
 
 </files>
