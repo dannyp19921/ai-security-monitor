@@ -4,6 +4,15 @@ package com.securemonitor.model
 import jakarta.persistence.*
 import java.time.Instant
 
+/**
+ * User entity representing an authenticated user in the system.
+ *
+ * Supports:
+ * - Username/password authentication
+ * - Role-based access control (RBAC)
+ * - Multi-factor authentication (MFA/TOTP)
+ * - OAuth2 federated login
+ */
 @Entity
 @Table(name = "users")
 data class User(
@@ -35,5 +44,38 @@ data class User(
     val createdAt: Instant = Instant.now(),
 
     @Column
-    val lastLogin: Instant? = null
+    val lastLogin: Instant? = null,
+
+    // ============================================
+    // MFA (Multi-Factor Authentication) fields
+    // ============================================
+
+    /**
+     * Whether MFA is enabled for this user.
+     * When true, users must provide a TOTP code after password authentication.
+     */
+    @Column(nullable = false)
+    val mfaEnabled: Boolean = false,
+
+    /**
+     * Base32-encoded TOTP secret for generating/verifying codes.
+     * Only set when MFA is enabled. Should be treated as highly sensitive.
+     */
+    @Column(length = 64)
+    val mfaSecret: String? = null,
+
+    /**
+     * JSON array of hashed backup codes for account recovery.
+     * Format: ["hash1", "hash2", ...]
+     * Codes are SHA-256 hashed for secure storage.
+     */
+    @Column(length = 1024)
+    val mfaBackupCodes: String? = null,
+
+    /**
+     * Timestamp when MFA was enabled.
+     * Useful for audit logging and security analysis.
+     */
+    @Column
+    val mfaEnabledAt: Instant? = null
 )
