@@ -1,5 +1,6 @@
 // frontend/src/components/auth/MfaSetup.tsx
 import { useState, useEffect } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { mfaService } from '../../services/api';
@@ -107,10 +108,10 @@ export function MfaSetup({ onComplete, onCancel }: MfaSetupProps) {
         {/* QR Code */}
         <div className="flex justify-center">
           <div className="p-4 bg-white rounded-lg shadow-inner border">
-            <img
-              src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(setupData!.qrCodeUri)}`}
-              alt="MFA QR Code"
-              className="w-48 h-48"
+            <QRCodeSVG
+              value={setupData!.qrCodeUri}
+              size={200}
+              level="M"
             />
           </div>
         </div>
