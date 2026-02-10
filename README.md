@@ -413,46 +413,37 @@ ai-security-monitor/
 └── docker-compose.yml
 ```
 
-## 🎯 Interview Talking Points
+## Key Technical Highlights
 
-### For DFØ (IAM Advisor Role)
-
-**OAuth 2.0/OIDC Expertise:**
+### OAuth 2.0/OIDC Implementation
 - Built OAuth 2.0 Provider from scratch (not using Keycloak) to demonstrate deep protocol understanding
 - Implemented PKCE with S256 method for public client security
 - Full OIDC compliance with Discovery and JWKS endpoints
 
-**SCIM 2.0 Implementation:**
+### SCIM 2.0 Implementation
 - Standardized user provisioning following RFC 7643/7644
 - Full CRUD operations with PATCH support for partial updates
 - Filter and pagination for efficient querying
 - Enables integration with enterprise IdPs (Azure AD, Okta, etc.)
 
-**Security Best Practices:**
+### Security Best Practices
 - Timing-safe comparisons to prevent timing attacks
 - SHA-256 hashed backup codes
 - Comprehensive audit logging of all security events
 - Short-lived authorization codes (10 minutes)
 - Single-use codes to prevent replay attacks
 
-**MFA Implementation:**
+### MFA Implementation
 - RFC 6238 compliant TOTP with 33 unit tests
 - Clock drift tolerance (±30 seconds)
 - Backup codes for account recovery
 
-### For Cyberforsvaret (Open Source Developer)
-
-**Kotlin Proficiency:**
+### Kotlin & Spring Boot
 - Clean, idiomatic Kotlin with Spring Boot
 - Data classes, extension functions, null safety
-- Coroutines-ready architecture
+- RESTful API design with PostgreSQL/JPA
 
-**Full-Stack Development:**
-- React + TypeScript frontend
-- RESTful API design
-- PostgreSQL with JPA/Hibernate
-
-**DevOps & Infrastructure:**
+### DevOps & Infrastructure
 - Docker containerization
 - Kubernetes manifests + Helm charts
 - GitHub Actions CI/CD
